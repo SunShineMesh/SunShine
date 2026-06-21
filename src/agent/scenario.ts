@@ -150,6 +150,25 @@ export function caseVerdict(proceeded: boolean, gateAllowed: boolean | undefined
 }
 
 /**
+ * Build the run summary's case lists from the ACTUAL verdicts of the two
+ * settlement cases (A → Lagos, B → Taipei). The headline "N settled, M halted"
+ * must never disagree with what the case cards show: in fallback mode the agent
+ * holds every payment, so this must report 0 settled — not a hardcoded 2. Cases
+ * C/D/E are deterministic denials by construction and are always in the denied list.
+ */
+export function summarizeCases(
+  verdictA: 'APPROVED' | 'DENIED',
+  verdictB: 'APPROVED' | 'DENIED',
+): { approvedCases: string[]; deniedCases: string[] } {
+  const approvedCases: string[] = [];
+  const deniedCases: string[] = [];
+  (verdictA === 'APPROVED' ? approvedCases : deniedCases).push('lagos_nigeria');
+  (verdictB === 'APPROVED' ? approvedCases : deniedCases).push('taipei_taiwan');
+  deniedCases.push('aml_sdn', 'tier_ceiling', 'delegation_budget');
+  return { approvedCases, deniedCases };
+}
+
+/**
  * Run the full cross-border scenario v3, emitting StepEvents through `emit`.
  * Returns when every case has been evaluated (or throws on a fatal
  * infrastructure error).
@@ -686,14 +705,19 @@ export async function runCrossBorderScenario(deps: {
       } });
 
     // ── Final summary ─────────────────────────────────────────────────────────
+    // Derive the headline from what ACTUALLY happened on-ledger, so "N settled,
+    // M halted" can never disagree with the case cards (e.g. fallback HOLDs → 0 settled).
+    const { approvedCases, deniedCases } = summarizeCases(
+      caseVerdict(proceedA, gateAllowedA),
+      caseVerdict(proceedB, gateAllowedB),
+    );
     emit({ type: 'demo_done', ok: true,
       summary: {
         operatorUid: CAST.operator.uid, operatorDataSource: zefixDetail._dataSource,
         btier, maxDelegatedSpend, fleetBudget, budgetAllocated: budget.allocated,
         tier: kyaFresh.terms.tier,
         agentA: agentA.address, agentB: agentB.address,
-        approvedCases: ['lagos_nigeria', 'taipei_taiwan'],
-        deniedCases: ['aml_sdn', 'tier_ceiling', 'delegation_budget'],
+        approvedCases, deniedCases,
         compromisedRevoked: !gAfterKill.allowed, agentAStillActive: gAgentAAfterKill.allowed,
         amlTarget: CAST.amlTarget.name, amlAction: amlScreen.action,
       } });

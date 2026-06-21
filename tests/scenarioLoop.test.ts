@@ -8,7 +8,7 @@
 // as brain.test.ts).
 
 import { describe, it, expect } from 'vitest';
-import { casePasses, caseVerdict, budgetCheck, commitBudget } from '../src/agent/scenario.js';
+import { casePasses, caseVerdict, budgetCheck, commitBudget, summarizeCases } from '../src/agent/scenario.js';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -112,6 +112,26 @@ describe('budget accounting — checking is pure; the budget is spent only on se
   });
 });
 
+describe('summarizeCases — the run headline reflects ACTUAL settlement outcomes', () => {
+  it('both cases approved → 2 settled, 3 halted (the happy path)', () => {
+    const { approvedCases, deniedCases } = summarizeCases('APPROVED', 'APPROVED');
+    expect(approvedCases).toEqual(['lagos_nigeria', 'taipei_taiwan']);
+    expect(deniedCases).toEqual(['aml_sdn', 'tier_ceiling', 'delegation_budget']);
+  });
+
+  it('a settlement case that halts moves to the denied list (no double-counting)', () => {
+    const { approvedCases, deniedCases } = summarizeCases('DENIED', 'APPROVED');
+    expect(approvedCases).toEqual(['taipei_taiwan']);
+    expect(deniedCases).toEqual(['lagos_nigeria', 'aml_sdn', 'tier_ceiling', 'delegation_budget']);
+  });
+
+  it('fallback mode (agent holds every payment) → 0 settled, 5 halted — honest, not a hardcoded 2', () => {
+    const { approvedCases, deniedCases } = summarizeCases('DENIED', 'DENIED');
+    expect(approvedCases).toEqual([]);
+    expect(deniedCases).toEqual(['lagos_nigeria', 'taipei_taiwan', 'aml_sdn', 'tier_ceiling', 'delegation_budget']);
+  });
+});
+
 describe('scenario v3 — case-based structure (source guards)', () => {
   it('emits case dividers (caseHeader) so each payment is bounded to one counterparty', () => {
     expect(scenarioSrc).toMatch(/caseHeader/);
@@ -152,5 +172,11 @@ describe('scenario v3 — case-based structure (source guards)', () => {
   it('the budget is spent (committed) only after on-ledger settlement, via commitBudget', () => {
     expect(scenarioSrc).toMatch(/commitBudget\(budget,\s*amountA\)/);
     expect(scenarioSrc).toMatch(/commitBudget\(budget,\s*amountB\)/);
+  });
+
+  it('the run summary derives its case lists from actual verdicts, not hardcoded arrays', () => {
+    expect(scenarioSrc).toMatch(/summarizeCases\(/);
+    // the old hardcoded approved-cases literal in the summary is gone
+    expect(scenarioSrc).not.toMatch(/approvedCases:\s*\[\s*'lagos_nigeria'/);
   });
 });
