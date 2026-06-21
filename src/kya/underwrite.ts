@@ -158,15 +158,16 @@ export async function underwrite(
     const settlements = opts.settlements ?? signals.rlusdPayments ?? 0;
     const windowDays = opts.windowDays ?? 0;
 
-    const d6Status = dims.find(d => d.id === 'D6')?.status;
-    const d6Pass = d6Status === 'PASS';
-
     const tierInput: TierInput = {
       d1: dims.find(d => d.id === 'D1')?.status === 'PASS',
       d2: dims.find(d => d.id === 'D2')?.status === 'PASS',
       d3: dims.find(d => d.id === 'D3')?.status === 'PASS',
       d5Mandate: dims.find(d => d.id === 'D5')?.status === 'PASS',
-      d6: d6Pass ? 'PASS' : 'FAIL',
+      // Derive d6 directly from the AML action so REVIEW is preserved and not collapsed
+      // to 'FAIL' (which would incorrectly trigger DENIED in tier.ts line 77).
+      d6: opts.amlResult
+        ? (opts.amlResult.action === 'DENY' ? 'DENY' : opts.amlResult.action === 'REVIEW' ? 'REVIEW' : 'PASS')
+        : 'PASS',
       principal: signals.operatorBacked ? 'org' : (signals.worldId ? 'individual' : 'pseudonymous'),
       settlements,
       windowDays,

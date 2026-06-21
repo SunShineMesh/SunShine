@@ -128,5 +128,25 @@ describe('underwrite', () => {
     const d6 = r.dossier.dimensions?.find(d => d.id === 'D6');
     expect(d6).toBeDefined();
     expect(d6!.status).toBe('FAIL');
+    // Critical security gate: AML DENY must produce a DENIED tier with $0 ceiling
+    expect(r.terms.tier).toBe('DENIED');
+    expect((r.terms as any).maxTxAmount).toBe('0');
+  });
+
+  it('v3: amlResult REVIEW flows into D6 as PENDING and still issues BRONZE (not DENIED)', async () => {
+    const mockReviewResult = {
+      hit: false, score: 0.6, matchedName: 'Similar Name', action: 'REVIEW' as const,
+    };
+    const r = await underwrite(noChain, 'rAgent', demoOffChain, {
+      now: NOW, version: 3, amlResult: mockReviewResult,
+    });
+    // D6 should be PENDING (not FAIL) for REVIEW
+    const d6 = r.dossier.dimensions?.find(d => d.id === 'D6');
+    expect(d6).toBeDefined();
+    expect(d6!.status).toBe('PENDING');
+    // REVIEW is acceptable for BRONZE issuance (tier.ts line 77 spec)
+    expect(r.terms.tier).toBe('BRONZE');
+    expect((r.terms as any).maxTxAmount).toBe('100');
+    expect(r.terms.disposition).toBe('A');
   });
 });
