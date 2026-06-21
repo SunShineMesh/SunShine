@@ -40,6 +40,11 @@ export const CONFIG = {
     baseUrl: process.env.DEEPSEEK_BASE_URL ?? 'https://api.deepseek.com',
     model: process.env.DEEPSEEK_MODEL ?? 'deepseek-v4-pro',
     flashModel: process.env.DEEPSEEK_FLASH_MODEL ?? 'deepseek-v4-flash',
+    // Reasoning budget. We deliberately keep this generous so the agent's
+    // chain-of-thought (reasoning_content) is long and legible rather than
+    // truncated — the demo SHOWS the agent thinking, so the thinking must be
+    // allowed to run. Override with DEEPSEEK_MAX_TOKENS if cost/latency matters.
+    maxTokens: Number(process.env.DEEPSEEK_MAX_TOKENS ?? 8000),
   },
   // World ID IDKit v4 — backend-only signing key must NEVER be sent to the frontend.
   // WORLDID_RP_SIGNING_KEY is the canonical name. WORLDID_KEY is kept as a legacy

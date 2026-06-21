@@ -25,19 +25,25 @@ const STATIONS = [CAST.operator, CAST.agentA, CAST.bureau, CAST.bank, CAST.suppl
 // Which actors each step lights up on the corridor.
 // v2 step IDs follow the new scenario arc; v1 IDs kept for backward compat.
 const ACTORS: Record<string, string[]> = {
-  // v2 arc
+  // v3 case-based arc
   setup:          ['operator', 'agentA', 'agentB', 'bureau', 'bank', 'supplierA', 'supplierB'],
   kyb:            ['operator', 'bureau'],
   gate:           ['bank'],
   kya_fresh:      ['agentA', 'bureau'],
   kya_thick:      ['agentA', 'bureau'],
   mandate:        ['operator', 'agentA'],
-  reason:         ['agentA'],
+  caseA:          ['agentA', 'supplierA'],
+  reason:         ['agentA', 'supplierA'],
   settle_a:       ['agentA', 'bank', 'supplierA'],
-  denial_tier:    ['agentA', 'bureau'],
+  caseB:          ['agentB', 'supplierB'],
   settle_b:       ['agentB', 'bank', 'supplierB'],
-  denial_budget:  ['agentB', 'bureau'],
+  caseC:          ['agentA', 'bureau'],
   denial_aml:     ['agentA', 'bureau'],
+  caseD:          ['agentA', 'bureau'],
+  denial_tier:    ['agentA', 'bureau'],
+  caseE:          ['agentB', 'bureau'],
+  denial_budget:  ['agentB', 'bureau'],
+  caseGov:        ['bureau'],
   contrast:       ['bank'],
   codeswap:       ['agentA', 'bureau'],
   kill:           ['bureau', 'agentA'],
@@ -52,7 +58,8 @@ const ACTORS: Record<string, string[]> = {
 };
 const PHASE_LABEL: Record<string, string> = {
   setup: 'Setup', identity: 'Identity', reasoning: 'Agent reasoning',
-  payment: 'Cross-border payment', contrast: 'Enforcement', governance: 'Governance', error: 'Error',
+  payment: 'Cross-border payment', denial: 'Denied · halted', case: 'Payment case',
+  contrast: 'Enforcement', governance: 'Governance', error: 'Error',
 };
 
 // Reveal a string progressively — the "watch it think" effect.
@@ -98,7 +105,12 @@ export default function Live() {
   // v2 scenario uses 'kya_fresh' as the primary KYA step; fall back to v1 'kya' for compat.
   const kya = steps.get('kya_fresh') ?? steps.get('kya');
   const kill = steps.get('kill');
-  const reason = steps.get('reason');
+  // The agent-mind panel follows the most recent decision that carries
+  // chain-of-thought, so it tracks whichever case is currently reasoning.
+  const mindStep = useMemo(() => {
+    const withCoT = stepsArr.filter((s) => typeof (s.data as any)?.reasoning === 'string' && (s.data as any).reasoning.length > 0);
+    return withCoT[withCoT.length - 1];
+  }, [stepsArr]);
   // Only mark the passport revoked if the kill-switch targeted THIS agent (Aria), not the
   // separate compromised agent. The kill step emits revokedAgent; compare to kya's agent field.
   const kyaAgent = (kya?.data as any)?.agent as string | undefined;
@@ -138,9 +150,10 @@ export default function Live() {
         <div className="eyebrow">Live demo · everything below is a real testnet transaction</div>
         <h1>Watch <span className="grad">Aria</span> pay across borders.</h1>
         <p className="sub">
-          A Swiss company's AI agent pays a supplier in Lagos through a bank that gates its account on an
-          on-ledger MeshCredit credential. The agent reasons with a real LLM, earns its trust passport, and
-          settles — while an uncertified agent is refused by the ledger itself. ~90 seconds, nothing mocked.
+          A Swiss company's AI agent evaluates payments one counterparty at a time. Each <b>case</b> runs the
+          full trust loop — and a denial <b>halts that case</b>: it pays a supplier in Lagos, then halts on a
+          sanctioned counterparty, an over-ceiling amount, and an over-budget request. The agent reasons with a
+          real LLM at every step, and the bank's account is gated on an on-ledger MeshCredit credential.
         </p>
         <div className="live-cta">
           <button className="btn btn-primary" onClick={start} disabled={running}>{running ? 'Running the arc…' : '▶  Run the live cross-border demo'}</button>
@@ -165,7 +178,7 @@ export default function Live() {
       {summary && (
         <div className="wrap"><div className={'verdict ' + (summary.ok ? 'pass' : 'fail')}>
           {summary.ok
-            ? <>✓ <b>Settled.</b> {CAST.agentA.name} ({summary.summary?.tier ?? summary.summary?.tier_v3}) was credentialed and paid across borders; three denial arcs blocked as expected.</>
+            ? <>✓ <b>{(summary.summary?.approvedCases?.length ?? 2)} settled, {(summary.summary?.deniedCases?.length ?? 3)} halted.</b> {CAST.agentA.name} ({summary.summary?.tier ?? summary.summary?.tier_v3}) settled across borders; every denied case stopped at its gate — no funds moved.</>
             : <>✕ Run ended early{err ? `: ${err}` : ''}.</>}
         </div></div>
       )}
@@ -192,7 +205,7 @@ export default function Live() {
 
         {/* right — the agent mind + the trust passport */}
         <aside className="rail">
-          <MindPanel reason={reason} running={running} brain={brain} />
+          <MindPanel step={mindStep} activeStep={activeStep} running={running} brain={brain} />
           {passport ? <Passport d={passport} /> : <Passport d={{}} pending />}
           {/* D2 World ID badge — shown in the right rail when a D2 dimension record is present */}
           {d2Dimension && (
@@ -260,28 +273,35 @@ function FlywheelContrast({ fresh, thick }: { fresh?: DemoStep; thick?: DemoStep
 }
 
 // ── the agent mind panel — the real LLM reasoning, surfaced ──
-function MindPanel({ reason, running, brain }: { reason?: DemoStep; running: boolean; brain: string }) {
-  const data = reason?.data as any;
-  const thinking = reason?.status === 'active';
+// Phases that produce chain-of-thought; while one is the live active step the
+// panel shows a "thinking" pulse until its reasoning lands.
+const REASONING_PHASES = new Set(['reasoning', 'payment', 'denial']);
+
+function MindPanel({ step, activeStep, running, brain }: { step?: DemoStep; activeStep?: DemoStep; running: boolean; brain: string }) {
+  const data = step?.data as any;
   const reasoning = data?.reasoning ?? '';
-  const typed = useTypewriter(thinking ? '' : reasoning);
   const decision = data?.decision as string | undefined;
+  const rationale = (data?.rationale ?? data?.plan) as string | undefined;
+  const thinking = !!(running && activeStep && activeStep.status === 'active'
+    && REASONING_PHASES.has(activeStep.phase) && activeStep.id !== step?.id);
+  const typed = useTypewriter(thinking ? '' : reasoning);
+  const headActor = thinking ? activeStep!.actor : (step?.actor ?? 'Aria');
   return (
     <div className={'mind' + (thinking ? ' thinking' : '')}>
       <div className="mind-h">
         <span className="mind-dot" />
-        <span className="mind-title">Aria · agent reasoning</span>
-        <span className="mind-model">{data?.fallback ? 'fallback' : brain}</span>
+        <span className="mind-title">{headActor} · agent reasoning</span>
+        <span className="mind-model">{data?.fallback ? 'fallback' : (data?.model ?? brain)}</span>
       </div>
-      {!reason && <div className="mind-idle">The agent reasons about the payment before it moves money. Its verdict appears here — and actually gates the next step.</div>}
+      {!step && !thinking && <div className="mind-idle">The agent reasons about each payment before it moves money. Its full chain-of-thought appears here — and the verdict actually gates the next step.</div>}
       {thinking && <div className="mind-idle thinking-line">thinking<span className="dots"><i>.</i><i>.</i><i>.</i></span></div>}
       {!thinking && reasoning && (
         <div className="mind-chain">{typed}<span className="caret">▌</span></div>
       )}
-      {!thinking && decision && (
+      {!thinking && (decision || rationale) && (
         <div className="mind-verdict">
-          <span className={'verdict-pill ' + (decision === 'PROCEED' ? 'go' : 'hold')}>{decision === 'PROCEED' ? '✓ PROCEED' : '✋ HOLD'}</span>
-          <span className="mind-rationale">{data?.rationale}</span>
+          {decision && <span className={'verdict-pill ' + (decision === 'PROCEED' ? 'go' : 'hold')}>{decision === 'PROCEED' ? '✓ PROCEED' : '✋ HOLD'}</span>}
+          {rationale && <span className="mind-rationale">{rationale}</span>}
           {data?.ms ? <span className="mind-lat">{(data.ms / 1000).toFixed(1)}s · {data.model}</span> : null}
         </div>
       )}
@@ -294,6 +314,8 @@ function MindPanel({ reason, running, brain }: { reason?: DemoStep; running: boo
 const CONTRAST_IDS = new Set(['kya_thick']);
 
 function StepCard({ s }: { s: DemoStep }) {
+  // Case dividers render as full-width section markers, not timeline cards.
+  if ((s.data as any)?.caseHeader) return <CaseDivider s={s} />;
   const icon = s.status === 'active' ? <span className="sc-spin" /> : s.status === 'denied' ? '✕' : s.status === 'info' ? '◌' : '✓';
   const extraClass = CONTRAST_IDS.has(s.id) ? ' contrast-kya' : '';
   const isDenied = s.status === 'denied';
@@ -307,9 +329,11 @@ function StepCard({ s }: { s: DemoStep }) {
         </div>
         <div className="sc-title">{s.title}</div>
         {s.body && <div className="sc-text">{s.body}</div>}
-        {/* Denial explanation banner — makes the three denial arcs legible for judges */}
+        {/* Denial explanation banner — makes each halted case legible for judges */}
         {isDenied && <DenialBanner stepId={s.id} data={s.data as any} />}
         <StepData s={s} />
+        {/* The agent's real chain-of-thought for this decision, surfaced in full */}
+        <ReasoningBlock data={s.data as any} actor={s.actor} />
         {s.tx && (
           <a className="sc-tx" href={s.tx.url} target="_blank" rel="noreferrer">
             <span className="sc-tx-kind">{s.tx.kind}</span>{s.tx.label}<span className="sc-tx-arr"> ↗</span>
@@ -320,24 +344,69 @@ function StepCard({ s }: { s: DemoStep }) {
   );
 }
 
+// ── a case divider — bounds one payment case and shows its verdict ──
+function CaseDivider({ s }: { s: DemoStep }) {
+  const verdict = (s.data as any)?.verdict as 'APPROVED' | 'DENIED' | undefined;
+  return (
+    <div className={'case-divider' + (verdict ? ' ' + verdict.toLowerCase() : '')}>
+      <div className="cd-head">
+        <span className="cd-title">{s.title}</span>
+        {verdict && (
+          <span className={'cd-verdict ' + verdict.toLowerCase()}>
+            {verdict === 'APPROVED' ? '✓ APPROVED' : '✕ DENIED · HALTED'}
+          </span>
+        )}
+      </div>
+      {s.body && <div className="cd-body">{s.body}</div>}
+    </div>
+  );
+}
+
+// ── the agent's chain-of-thought for one decision, rendered in full ──
+function ReasoningBlock({ data, actor }: { data: any; actor: string }) {
+  const reasoning = data?.reasoning as string | undefined;
+  const conclusion = (data?.rationale ?? data?.plan) as string | undefined;
+  const decision = data?.decision as string | undefined;
+  if (!reasoning && !conclusion) return null;
+  return (
+    <details className="sc-reasoning" open>
+      <summary className="scr-head">
+        <span className="scr-dot" />
+        <span className="scr-who">{actor} · reasoning</span>
+        {data?.model && <span className="scr-model">{data?.fallback ? 'fallback' : data.model}</span>}
+        {data?.ms ? <span className="scr-lat">{(data.ms / 1000).toFixed(1)}s</span> : null}
+      </summary>
+      {reasoning && <div className="scr-chain">{reasoning}</div>}
+      {conclusion && (
+        <div className="scr-concl">
+          {decision && <span className={'scr-pill ' + (decision === 'PROCEED' ? 'go' : 'hold')}>{decision}</span>}
+          <span className="scr-concl-t">{conclusion}</span>
+        </div>
+      )}
+    </details>
+  );
+}
+
 // Denial-specific explanation banners
 const DENIAL_REASONS: Record<string, (d: any) => string> = {
   // scenario emits tierCeiling and requestedAmount for denial_tier
   denial_tier:   (d) => `Tier ceiling $${d?.tierCeiling ?? d?.ceiling ?? d?.maxTxAmount ?? '?'} < requested $${d?.requestedAmount ?? d?.requested ?? d?.amount ?? '?'} — agent must earn a higher tier`,
-  // scenario emits remaining and requestedAmount for denial_budget
-  denial_budget: (d) => `Daily budget exhausted — $${d?.remaining ?? '?'} remaining, $${d?.requestedAmount ?? d?.requested ?? d?.amount ?? '?'} requested`,
+  // scenario emits remaining, demoDelegationBudget (the per-run fleet budget), and requestedAmount
+  denial_budget: (d) => `Fleet delegation budget exceeded — $${d?.remaining ?? '?'} of the $${d?.demoDelegationBudget ?? '?'} run budget remains, $${d?.requestedAmount ?? d?.requested ?? d?.amount ?? '?'} requested`,
   denial_aml:    (d) => `AML block — D6 matched sanctioned entity "${d?.matchedName ?? d?.amlTarget ?? '?'}" on OFAC SDN`,
   contrast:      ()  => 'Uncertified agent — ledger rejects with tecNO_PERMISSION before bank even sees it',
 };
 
 function DenialBanner({ stepId, data }: { stepId: string; data: any }) {
   const fn = DENIAL_REASONS[stepId];
-  if (!fn) return null;
-  const reason = fn(data);
+  // Show a banner for the known denial steps, and for any case that halted.
+  if (!fn && !data?.halted) return null;
+  const reason = fn ? fn(data) : (data?.reason || data?.rationale || 'gate denied — payment attempt stopped');
+  const halted = !!data?.halted;
   return (
     <div className="denied-banner" role="alert">
       <span className="db-icon">⊘</span>
-      <span className="db-reason"><span className="db-label">DENIED</span> — {reason}</span>
+      <span className="db-reason"><span className="db-label">{halted ? 'DENIED · HALTED' : 'DENIED'}</span> — {reason}{halted ? ' · no funds moved' : ''}</span>
     </div>
   );
 }
@@ -403,7 +472,13 @@ function StepData({ s }: { s: DemoStep }) {
     case 'settle_b':
     case 'confirm_a': {
       const amt = d.abstractAmount ?? d.amount;
-      return <div className="sc-chips"><Chip k="amount" v={amt ? `$${amt}` : '—'} /><Chip k="status" v={d.status ?? 'OK'} good /></div>;
+      const ok = d.verdict ? d.verdict === 'APPROVED' : true;
+      return <div className="sc-chips">
+        <Chip k="amount" v={amt ? `$${amt}` : '—'} />
+        {d.amlAction && <Chip k="AML" v={d.amlAction} good={d.amlAction === 'PASS'} bad={d.amlAction === 'DENY'} />}
+        {d.decision && <Chip k="agent" v={d.decision} good={d.decision === 'PROCEED'} bad={d.decision !== 'PROCEED'} />}
+        <Chip k="verdict" v={ok ? 'SETTLED' : 'HALTED'} good={ok} bad={!ok} />
+      </div>;
     }
 
     // Denial steps

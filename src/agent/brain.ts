@@ -40,7 +40,7 @@ export async function reason(
       body: JSON.stringify({
         model,
         messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
-        max_tokens: opts.maxTokens ?? 700,
+        max_tokens: opts.maxTokens ?? CONFIG.deepseek.maxTokens,
         temperature: opts.temperature ?? 0.3,
       }),
     });
@@ -106,7 +106,7 @@ export async function assessCounterparty(ctx: {
     `- Matched SDN name: ${ctx.matchedName}\n` +
     `- Your tier: ${ctx.tier}, ceiling: $${ctx.maxTxAmount}\n\n` +
     `Given this result, assess whether to proceed with or hold the payment.`;
-  const t = await reason(system, user, { model: CONFIG.deepseek.flashModel, maxTokens: 700 });
+  const t = await reason(system, user, { model: CONFIG.deepseek.flashModel, maxTokens: CONFIG.deepseek.maxTokens });
   const decision: 'PROCEED' | 'HOLD' = /DECISION:\s*HOLD/i.test(t.content) ? 'HOLD' : 'PROCEED';
   const rationale =
     t.content.replace(/^.*DECISION:\s*(PROCEED|HOLD)\s*/is, '').replace(/^[\s\-—:.]+/, '').trim()
@@ -139,7 +139,7 @@ export async function assessPayment(ctx: {
     `- Purpose: ${ctx.purpose}\n` +
     `- Your credential ceiling: $${ctx.maxTxAmount} (${ctx.tier})\n\n` +
     `Assess the risk and decide.`;
-  const t = await reason(system, user, { model: CONFIG.deepseek.model, maxTokens: 900 });
+  const t = await reason(system, user, { model: CONFIG.deepseek.model, maxTokens: CONFIG.deepseek.maxTokens });
   const decision: 'PROCEED' | 'HOLD' = t.fallback || /DECISION:\s*HOLD/i.test(t.content) ? 'HOLD' : 'PROCEED';
   const rationale =
     t.content.replace(/^.*DECISION:\s*(PROCEED|HOLD)\s*/is, '').replace(/^[\s\-—:.]+/, '').trim()

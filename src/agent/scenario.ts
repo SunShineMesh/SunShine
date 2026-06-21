@@ -1,25 +1,36 @@
-// MeshCredit — Demo scenario v2: fan-out, three denials, thick-file contrast.
+// MeshCredit — Demo scenario v3: a CASE-BASED agent trust loop.
 //
-// Arc: one KYB'd principal (Novartis AG, via Zefix fixture) → two agents/suppliers
-// (agentA→supplierA and agentB→supplierB) plus a separate compromised agent;
-// three denials that BITE (tier ceiling, delegation cap, AML); XLS-80 Permissioned
-// Domain gate; thick-file vs fresh-file contrast; coherent kill-switch (only
-// compromised agent revoked — the successful agents remain active).
+// The agent does not run one long tangled arc. It evaluates a sequence of
+// independent PAYMENT CASES, each scoped to exactly ONE counterparty. Every case
+// runs the same trust loop and STOPS at the first gate that denies — a denial
+// terminates that case cleanly (no funds move, no further steps), instead of the
+// run barrelling on. This fixes two demo bugs:
+//   1. "we're paying a Nigerian company but another company pops up" — each case
+//      is bounded to a single counterparty, so suppliers never bleed into one
+//      another mid-flow.
+//   2. "a denial should stop the process" — a denied gate halts the case; the
+//      step is marked { halted:true } and nothing downstream runs for that case.
 //
-// AGENTIC REQUIREMENT: the agent calls a real frontier model at every decision
-// point — plan, per-payment (supplierA leg, supplierB leg), AML reasoning,
-// and denial reactions. Each step emits { model, ms, reasoning, decision } from
-// the REAL call. If brainEnabled() is false, each step is labelled fallback:true.
+// The cases:
+//   Case A  APPROVED  Aria  → Lagos Precision Parts (Nigeria)  — full settlement
+//   Case B  APPROVED  Bravo → Taipei Tech Components (Taiwan)  — full settlement
+//   Case C  DENIED    Aria  → Star Dragon Corp (OFAC SDN)      — D6 AML, HALT
+//   Case D  DENIED    Aria  → $300 over BRONZE ceiling         — tier gate, HALT
+//   Case E  DENIED    Bravo → $500 over delegation budget      — fleet cap, HALT
+// then bureau enforcement: uncertified→consensus denial, code-swap, kill-switch.
 //
-// RLUSD CONSERVATION: all on-chain RLUSD transfers ≤ 0.5 RLUSD per leg.
-// The tier/delegation ceilings ($100/$500/$2000) are ABSTRACT logic-and-display
-// values only — the actual RLUSD moved is always tiny. Denial cases are
-// denied by logic before any transfer is submitted.
+// AGENTIC REQUIREMENT: the agent calls a real frontier model at EVERY decision
+// point — plan, per-payment risk, counterparty AML reasoning, denial reactions.
+// Reasoning is uncapped (CONFIG.deepseek.maxTokens) so the chain-of-thought runs
+// long, and every step surfaces its reasoning_content for the viewer to read.
+// If brainEnabled() is false, each step is labelled fallback:true.
 //
-// Zefix: fixture-based (no credentials required). Label source honestly as
-// "Zefix public registry (cached)".
+// RLUSD CONSERVATION: all on-chain transfers are tiny (≤0.1 XRP drops). The
+// tier/delegation ceilings ($100/$150/$2000) are ABSTRACT logic-and-display
+// values only. Denied cases are denied by logic BEFORE any transfer is submitted.
 //
-// The StepEvent shape and emit pattern are preserved so the web theater works.
+// Zefix: fixture-based (no credentials). Labelled honestly as cached.
+// The StepEvent shape is preserved so the web theater keeps working.
 
 import { Client, Wallet } from 'xrpl';
 import { fundNew, loadOrFund } from '../xrpl/wallets.js';
@@ -76,30 +87,72 @@ const tecOf = (e: any): string => ((e?.message || String(e)).match(/te[a-z][A-Z_
 // ── Scenario helpers ─────────────────────────────────────────────────────────
 
 /** Shared delegation budget tracker for the operator's aggregate cap. */
-type Budget = { allocated: string };
+export type Budget = { allocated: string };
 
 /**
- * Draw down the shared delegation budget against the given cap.
- * @param budget   Mutable tracker of total allocated spend.
- * @param amount   Requested allocation amount.
- * @param cap      The ceiling to check against (operator maxDelegatedSpend or an agent
- *                 sub-cap such as the tier ceiling). Callers must pass the right cap.
+ * Check whether a draw fits within the cap — WITHOUT spending anything. This is a
+ * pure gate: it never mutates `budget`. Checking and spending are deliberately
+ * separated so that a case which later HALTS (agent HOLD, AML deny, or the bank
+ * gate refusing release) does NOT consume the fleet budget. The earlier design
+ * folded the mutation into the check, so a denied payment still drew down the
+ * budget and the displayed allocation could not be trusted.
+ * @param budget  Tracker of total allocated spend (read-only here).
+ * @param amount  Requested allocation amount.
+ * @param cap     The ceiling to check against — pass the advertised fleet budget so
+ *                the per-case gate enforces the same number the UI narrates.
  */
-function drawBudget(budget: Budget, amount: string, cap: string): { ok: boolean; reason?: string } {
+export function budgetCheck(budget: Budget, amount: string, cap: string): { ok: boolean; reason?: string } {
   const result = delegationCapCheck({
     maxDelegatedSpend: cap,
     allocatedTotal: budget.allocated,
     requestedAllocation: amount,
   });
-  if (result.allowed) {
-    budget.allocated = String(Number(budget.allocated) + Number(amount));
-  }
   return { ok: result.allowed, reason: result.reason };
 }
 
 /**
- * Run the full cross-border scenario v2, emitting StepEvents through `emit`.
- * Returns when the arc completes (or throws on a fatal infrastructure error).
+ * Spend the budget. This is the ONLY thing that mutates `budget.allocated`, and it
+ * must be called only once a case has actually settled on-ledger — so the running
+ * allocation reflects money that genuinely moved, not money that was merely
+ * requested. Always pair with a prior {@link budgetCheck} that returned ok.
+ */
+export function commitBudget(budget: Budget, amount: string): void {
+  budget.allocated = String(Number(budget.allocated) + Number(amount));
+}
+
+/**
+ * The core STOP-ON-DENIAL rule for a payment case. A case proceeds to on-ledger
+ * settlement ONLY if every gate passes: the counterparty is not AML-denied, the
+ * agent's own risk verdict is PROCEED, and the payment is within the delegation
+ * budget. If ANY gate fails, the case halts — no funds move. Extracted as a pure
+ * function so the halt logic is explicit and unit-testable without a live ledger.
+ */
+export function casePasses(g: {
+  amlAction: 'PASS' | 'REVIEW' | 'DENY';
+  decision: 'PROCEED' | 'HOLD';
+  budgetOk: boolean;
+}): boolean {
+  return g.amlAction !== 'DENY' && g.decision === 'PROCEED' && g.budgetOk;
+}
+
+/**
+ * The verdict shown on a payment case's header. It must reflect what ACTUALLY
+ * happened on-ledger, not merely whether the soft gates passed: a case is
+ * APPROVED only if it both cleared the soft gates (`proceeded`) AND the bank's
+ * on-ledger gate released the funds (`gateAllowed === true`). If the case never
+ * reached the on-ledger gate (`gateAllowed === undefined`, e.g. a soft-gate halt
+ * or an unavailable credential) or the gate refused release (`false`), the case
+ * is DENIED. This keeps the case-divider verdict consistent with its settlement
+ * card instead of optimistically claiming APPROVED off the soft gates alone.
+ */
+export function caseVerdict(proceeded: boolean, gateAllowed: boolean | undefined): 'APPROVED' | 'DENIED' {
+  return proceeded && gateAllowed === true ? 'APPROVED' : 'DENIED';
+}
+
+/**
+ * Run the full cross-border scenario v3, emitting StepEvents through `emit`.
+ * Returns when every case has been evaluated (or throws on a fatal
+ * infrastructure error).
  */
 export async function runCrossBorderScenario(deps: {
   c: Client;
@@ -118,12 +171,17 @@ export async function runCrossBorderScenario(deps: {
   const patch = (id: string, p: Partial<StepEvent>) => emit({ type: 'step', id, ...p });
   const tx = (kind: string, label: string, hash: string) => ({ kind, label, hash, url: CONFIG.explorerTx(hash) });
 
+  /** Emit a case-divider header. Patched later with a verdict once the case resolves. */
+  const caseHeader = (id: string, actor: string, title: string, body: string): string =>
+    start({ id, phase: 'case', actor, title, body, status: 'info', data: { caseHeader: true } });
+
   emit({ type: 'demo_start', cast: CAST, brain: brainEnabled() ? CONFIG.deepseek.model : 'fallback' });
 
   // Build the AML matcher once (uses fixture in test/no-CSV environments).
   const amlMatcher = buildAmlMatcher();
 
   try {
+    // ══ PHASE 1 · SETUP + IDENTITY ════════════════════════════════════════════
     // ── STEP 0 · setup — provision wallets ───────────────────────────────────
     start({ id: 'setup', phase: 'setup', actor: 'Ledger',
       title: 'Provisioning the actors on XRPL testnet',
@@ -135,7 +193,7 @@ export async function runCrossBorderScenario(deps: {
     const agentB        = await fundNew(c, 'agentB');
     const compromisedAgent = await fundNew(c, 'compromisedAgent');
     // demoAgent is the RLUSD-holding wallet (persistent seed from .wallets.json).
-    // agentA/Aria maps to demoAgent for actual RLUSD settlement legs.
+    // agentA/Aria maps to demoAgent for actual on-ledger settlement legs.
     const demoAgent     = await loadOrFund(c, 'demoAgent');
     const supplierA     = await fundNew(c, 'supplierA');
     const supplierB     = await fundNew(c, 'supplierB');
@@ -182,6 +240,10 @@ export async function runCrossBorderScenario(deps: {
 
     // Shared budget tracker (abstract USD, not actual RLUSD moved).
     const budget: Budget = { allocated: '0' };
+    // The operator delegates an explicit per-run FLEET budget to the agent fleet
+    // (distinct from Novartis's full KYB authority of $maxDelegatedSpend). This is
+    // what the over-budget case (Case E) bites against.
+    const fleetBudget = '150';
 
     // ── STEP 2 · gate — XLS-80 PermissionedDomain on bank venue ─────────────
     start({ id: 'gate', phase: 'identity', actor: 'Bank',
@@ -206,7 +268,7 @@ export async function runCrossBorderScenario(deps: {
     const kyaFresh = await underwrite(c, agentA.address, offChainFresh, {
       attestation, operatorCredId: opView?.credId, version: 3,
       // D6 defaults to PASS when no amlName/amlResult is provided — agentA is AML-clear.
-      // Counterparty AML screening happens at payment time (assessCounterparty), not here.
+      // Counterparty AML screening happens at payment time, per case, not here.
     });
 
     const freshIssueHash = await issueCredential(c, treasury, agentA.address, kyaFresh.terms);
@@ -224,11 +286,6 @@ export async function runCrossBorderScenario(deps: {
       } });
 
     // ── STEP 4 · kya_thick — thick-file contrast (pre-seeded GOLD agent) ─────
-    // Read from THICK_AGENT_ADDR env (set from .thick-agent.json by seed script).
-    // The signals (35 settlements, 90-day window) were seeded on-chain by the seed script;
-    // in this demo path we display those seeded values without re-fetching live on-chain data.
-    // demoSynthetic=false when THICK_AGENT_ADDR is present (real wallet, seeded signals);
-    // demoSynthetic=true when falling back to a freshly-funded wallet (no on-chain history).
     const thickAddrEnv = process.env.THICK_AGENT_ADDR;
     const thickAddr = thickAddrEnv ?? agentA.address;
     const thickIsReal = !!thickAddrEnv;
@@ -261,194 +318,189 @@ export async function runCrossBorderScenario(deps: {
     patch('mandate', { status: 'done', data: {
       principal: CAST.operator.name, uid: CAST.operator.uid,
       agentKey: agentA.address, skillId: 'cross-border-procurement',
-      principalSigPresent: true, note: 'Hackathon wire contract: field presence confirms mandate',
+      principalSigPresent: true, mandateIssued: true,
+      note: 'Hackathon wire contract: field presence confirms mandate',
     } });
 
-    // ── STEP 6 · reason — agent plans across both suppliers (REAL LLM call) ──
+    // ══ PHASE 2 · PAYMENT CASES (each is one counterparty; a denial HALTS it) ══
+
+    // ── CASE A · APPROVED — Aria → Lagos Precision Parts (Nigeria) ───────────
+    caseHeader('caseA', CAST.agentA.name,
+      `Case A · ${CAST.agentA.name} → ${CAST.supplierA.name}`,
+      `${CAST.supplierA.flag} A single coherent cross-border payment to one supplier in ${CAST.supplierA.city}, ${CAST.supplierA.country}. The agent runs its full trust loop, then settles on-ledger.`);
+
+    const amountA = '50';
+
+    // STEP A1 · reason — agent plans THIS payment (real, long LLM reasoning).
     start({ id: 'reason', phase: 'reasoning', actor: CAST.agentA.name,
-      title: `${CAST.agentA.name} plans disbursement`,
-      body: `${CAST.agentA.flag} Before moving money, the agent reviews its mandate, tier ceiling ($${TIER_CEILING.BRONZE}), and the shared delegation budget ($${maxDelegatedSpend} total). Real ${brainEnabled() ? CONFIG.deepseek.flashModel : 'fallback'} call.` });
+      title: `${CAST.agentA.name} reasons about the ${CAST.supplierA.name} payment`,
+      body: `${CAST.agentA.flag} Before moving money the agent reviews its mandate, its BRONZE ceiling ($${TIER_CEILING.BRONZE}), and the $${fleetBudget} fleet budget — for THIS payment only. Real ${brainEnabled() ? CONFIG.deepseek.flashModel : 'fallback'} call, reasoning shown in full.` });
 
     const planThought = await reason(
-      `You are Aria, an autonomous procurement AI agent for Novartis AG. ` +
-      `You hold a BRONZE MeshCredit trust credential with a per-payment ceiling of $${TIER_CEILING.BRONZE}. ` +
-      `The operator's total delegation budget is $${maxDelegatedSpend}. ` +
-      `Summarise briefly (2-3 sentences) how you will disburse across two suppliers ` +
-      `given those constraints.`,
-      `Suppliers: Lagos Precision Parts ($50 for CNC parts for lab equipment) and Taipei Tech Components ($60 for PCB components for medical devices). ` +
-      `Novartis manufactures both lab equipment and medical devices, so both procurement lines are in-scope. Both amounts are within your $100 ceiling individually. How will you proceed?`,
-      { model: CONFIG.deepseek.flashModel, maxTokens: 700 },
+      `You are Aria, an autonomous procurement AI agent acting for Novartis AG (a KYB-verified Swiss pharmaceutical company). ` +
+      `You hold a BRONZE MeshCredit trust credential with a hard per-payment ceiling of $${TIER_CEILING.BRONZE}. ` +
+      `Your fleet shares a $${fleetBudget} delegation budget for this run. You must think carefully and show your work: ` +
+      `consider whether this single supplier payment is in-scope for Novartis procurement, within your ceiling, AML-sensible, and a prudent use of the shared budget.`,
+      `You are about to pay ONE supplier: ${CAST.supplierA.name} in ${CAST.supplierA.city}, ${CAST.supplierA.country} — $${amountA} for CNC precision parts for lab equipment Novartis manufactures. ` +
+      `Reason step by step about whether to proceed with this specific payment, then conclude.`,
+      { model: CONFIG.deepseek.flashModel, maxTokens: CONFIG.deepseek.maxTokens },
     );
     patch('reason', { status: 'done', data: {
+      counterparty: CAST.supplierA.name, country: CAST.supplierA.country, amount: amountA,
       plan: planThought.content, reasoning: planThought.reasoning,
       model: planThought.model, ms: planThought.ms, fallback: planThought.fallback,
     } });
 
-    // ── STEP 7 · settle_a — agentA settles $50 to supplierA ─────────────────
-    // Per-payment: real LLM assesses the supplierA leg.
-    const amountA = '50';
+    // STEP A2 · settle_a — the agent's risk loop then on-ledger settlement.
     start({ id: 'settle_a', phase: 'payment', actor: CAST.agentA.name,
       title: `${CAST.agentA.name} → ${CAST.supplierA.name} ($${amountA})`,
-      body: `${CAST.agentA.flag} Real DeepSeek assessment gates this leg. On PROCEED: tiny RLUSD escrow → credentialed release → SUCCESS.` });
+      body: `${CAST.agentA.flag} Counterparty AML screen → real DeepSeek risk assessment → on PROCEED: escrow at the bank gate → certified release → SUCCESS. On HOLD: the case halts here.` });
 
+    // Gate 1 — counterparty AML screen (D6). Lagos Precision Parts is clean → PASS.
+    const amlA = screenName(amlMatcher, CAST.supplierA.name);
+    // Gate 2 — the agent's real risk decision on this specific payment.
     const assessA = await assessPayment({
       payer: CAST.operator.name, payerCountry: CAST.operator.country,
       payee: CAST.supplierA.name, payeeCountry: CAST.supplierA.country,
       amount: amountA, currency: 'USD', purpose: 'CNC precision parts — purchase order',
       tier: 'BRONZE', maxTxAmount: TIER_CEILING.BRONZE,
     });
+    // Gate 3 — shared FLEET delegation budget (pure check; spent only on settle).
+    const drawA = budgetCheck(budget, amountA, fleetBudget);
 
-    // Draw down abstract delegation budget against the operator-level cap.
-    const drawA = drawBudget(budget, amountA, maxDelegatedSpend);
-
-    if (assessA.decision === 'PROCEED' && drawA.ok) {
-      // Actual XRP transfer: tiny amount from demoAgent → supplierA (via bank escrow gate).
-      // The abstract $50 is the display/logic value; the wire amount is 0.1 XRP (XRP testnet drops).
+    const proceedA = casePasses({ amlAction: amlA.action, decision: assessA.decision, budgetOk: drawA.ok });
+    const credIdA = viewFresh?.credId;
+    // gateAllowedA stays undefined unless the case actually reaches the on-ledger
+    // gate; the case header verdict is derived from it (not from proceedA alone).
+    let gateAllowedA: boolean | undefined;
+    if (proceedA && credIdA) {
       const handleA = await submitPaymentForApproval(
         c, demoAgent, bank.address,
-        '100000', // 0.1 XRP drops — XRP only, never RLUSD
+        '100000', // 0.1 XRP drops — abstract $50 is display only
         dossierRef('settle_a:' + agentA.address),
       );
       const gA = await gateCheck(c, agentA.address, treasury.address, 'TIER-1', { amount: amountA });
+      gateAllowedA = gA.allowed;
       let releaseHashA: string | undefined;
       if (gA.allowed) {
-        releaseHashA = await approveAndRelease(c, agentA, demoAgent.address, handleA, [viewFresh!.credId]);
+        releaseHashA = await approveAndRelease(c, agentA, demoAgent.address, handleA, [credIdA]);
+        commitBudget(budget, amountA); // spend the fleet budget only now that funds moved
       }
-      // If gate unexpectedly blocks: leave the escrow to auto-refund when CancelAfter elapses.
-      // Do NOT call EscrowCancel — it will return tecNO_PERMISSION before CancelAfter.
-      patch('settle_a', { status: gA?.allowed ? 'done' : 'denied',
-        tx: tx('EscrowFinish', `Released $${amountA} → ${CAST.supplierA.name}`, releaseHashA ?? handleA.createHash),
+      patch('settle_a', { status: gA.allowed ? 'done' : 'denied',
+        ...(gA.allowed
+          ? { tx: tx('EscrowFinish', `Released $${amountA} → ${CAST.supplierA.name}`, releaseHashA!) }
+          : { tx: tx('EscrowCreate', `Escrow held (not released) — ${CAST.supplierA.name}`, handleA.createHash) }),
         data: {
-          decision: assessA.decision, rationale: assessA.rationale,
-          model: assessA.model, ms: assessA.ms, fallback: assessA.fallback,
-          budgetAllocated: budget.allocated, gateAllowed: gA?.allowed,
-          abstractAmount: amountA, note: 'abstract $50 displayed; tiny XRP moved on-chain',
+          verdict: gA.allowed ? 'APPROVED' : 'DENIED',
+          ...(gA.allowed ? {} : { halted: true }),
+          amlAction: amlA.action, decision: assessA.decision, rationale: assessA.rationale,
+          reasoning: assessA.reasoning, model: assessA.model, ms: assessA.ms, fallback: assessA.fallback,
+          budgetAllocated: budget.allocated, gateAllowed: gA.allowed,
+          abstractAmount: amountA,
+          note: gA.allowed
+            ? 'abstract $50 displayed; tiny XRP moved on-chain'
+            : 'case halted at the bank gate — no funds released',
         } });
     } else {
-      // HOLD or delegation cap exceeded — no funds moved, no escrow created.
+      // A soft gate denied, OR the agent's on-ledger credential is unavailable →
+      // the case HALTS here. No escrow, no funds moved.
+      const haltReason = !proceedA
+        ? (drawA.reason ?? 'agent risk hold / AML / budget gate denied')
+        : 'agent credential unavailable — cannot present at the bank gate';
       patch('settle_a', { status: 'denied',
         data: {
-          decision: assessA.decision, rationale: assessA.rationale, reason: drawA.reason,
-          note: 'agent held — no funds moved',
+          verdict: 'DENIED', halted: true,
+          amlAction: amlA.action, decision: assessA.decision, rationale: assessA.rationale,
+          reasoning: assessA.reasoning, reason: haltReason,
+          model: assessA.model, ms: assessA.ms, fallback: assessA.fallback,
+          note: 'case halted — agent held, no funds moved',
         } });
     }
+    patch('caseA', { data: { verdict: caseVerdict(proceedA, gateAllowedA) } });
 
-    // ── STEP 8 · denial_tier — agentA attempts $300 → tier ceiling DENIES ───
-    start({ id: 'denial_tier', phase: 'denial', actor: CAST.agentA.name,
-      title: 'Denial #1 — tier ceiling ($300 > BRONZE $100)',
-      body: `${CAST.agentA.flag} agentA attempts a $300 payment. BRONZE ceiling is $100. effectiveCeiling() denies before submission.` });
-
-    const overAmount = '300';
-    const eff = effectiveCeiling('BRONZE', TIER_CEILING.BRONZE, maxDelegatedSpend);
-    const tierDenied = Number(overAmount) > Number(eff);
-
-    // The model reacts to the denial (real LLM call for denial reaction).
-    const tierDenialReact = await reason(
-      `You are Aria, an autonomous procurement AI agent with a BRONZE credential (ceiling $${TIER_CEILING.BRONZE}).`,
-      `You attempted a $${overAmount} payment but your tier ceiling is $${eff}. ` +
-      `Briefly explain how you will adapt (split, defer, or escalate). One sentence.`,
-      { model: CONFIG.deepseek.flashModel, maxTokens: 700 },
-    );
-    patch('denial_tier', { status: 'denied', data: {
-      requestedAmount: overAmount, tierCeiling: TIER_CEILING.BRONZE, effectiveCeiling: eff,
-      denied: tierDenied, reason: `tier ceiling: $${TIER_CEILING.BRONZE}, requested: $${overAmount} → DENIED`,
-      agentReaction: tierDenialReact.content, model: tierDenialReact.model, ms: tierDenialReact.ms,
-      fallback: tierDenialReact.fallback,
-    } });
-
-    // ── STEP 9 · settle_b — agentB pays $60 to supplierB ────────────────────
-    // First, underwrite agentB and issue a credential.
+    // ── CASE B · APPROVED — Bravo → Taipei Tech Components (Taiwan) ──────────
+    // A SECOND, separate case. It is its own bounded flow — it does not bleed
+    // into Case A. First underwrite agentB and issue its credential.
     const kyaB = await underwrite(c, agentB.address, offChainFresh, {
       attestation, operatorCredId: opView?.credId, version: 3,
-      // D6 defaults to PASS — agentB is AML-clear; counterparty screening is per-payment.
     });
     const bIssueHash = await issueCredential(c, treasury, agentB.address, kyaB.terms);
     await acceptCredential(c, agentB, treasury.address);
     const viewB = await fetchCredential(c, agentB.address, treasury.address);
 
     const amountB = '60';
+    caseHeader('caseB', CAST.agentB.name,
+      `Case B · ${CAST.agentB.name} → ${CAST.supplierB.name}`,
+      `${CAST.supplierB.flag} A distinct second payment to ${CAST.supplierB.city}, ${CAST.supplierB.country}. Same trust loop, its own counterparty, drawing down the shared $${fleetBudget} fleet budget.`);
+
     start({ id: 'settle_b', phase: 'payment', actor: CAST.agentB.name,
       title: `${CAST.agentB.name} → ${CAST.supplierB.name} ($${amountB})`,
-      body: `${CAST.agentB.flag} Real DeepSeek assessment gates this leg. Draws down the shared delegation budget.` });
+      body: `${CAST.agentB.flag} Counterparty AML screen → real DeepSeek risk assessment → escrow → certified release → SUCCESS.` });
 
+    const amlB = screenName(amlMatcher, CAST.supplierB.name);
     const assessB = await assessPayment({
       payer: CAST.operator.name, payerCountry: CAST.operator.country,
       payee: CAST.supplierB.name, payeeCountry: CAST.supplierB.country,
       amount: amountB, currency: 'USD', purpose: 'Medical device PCB components — verified purchase order PO-2026-0482',
       tier: 'BRONZE', maxTxAmount: TIER_CEILING.BRONZE,
     });
+    const drawB = budgetCheck(budget, amountB, fleetBudget);
 
-    const drawB = drawBudget(budget, amountB, maxDelegatedSpend);
-
-    if (assessB.decision === 'PROCEED' && drawB.ok) {
+    const proceedB = casePasses({ amlAction: amlB.action, decision: assessB.decision, budgetOk: drawB.ok });
+    const credIdB = viewB?.credId;
+    let gateAllowedB: boolean | undefined;
+    if (proceedB && credIdB) {
       const handleB = await submitPaymentForApproval(
         c, demoAgent, bank.address, '100000',
         dossierRef('settle_b:' + agentB.address),
       );
       const gB = await gateCheck(c, agentB.address, treasury.address, 'TIER-1', { amount: amountB });
+      gateAllowedB = gB.allowed;
       let releaseHashB: string | undefined;
       if (gB.allowed) {
-        releaseHashB = await approveAndRelease(c, agentB, demoAgent.address, handleB, [viewB!.credId]);
+        releaseHashB = await approveAndRelease(c, agentB, demoAgent.address, handleB, [credIdB]);
+        commitBudget(budget, amountB); // spend the fleet budget only now that funds moved
       }
-      // If gate unexpectedly blocks: leave the escrow to auto-refund. No EscrowCancel.
-      patch('settle_b', { status: gB?.allowed ? 'done' : 'denied',
-        tx: tx('EscrowFinish', `Released $${amountB} → ${CAST.supplierB.name}`, releaseHashB ?? handleB.createHash),
+      patch('settle_b', { status: gB.allowed ? 'done' : 'denied',
+        ...(gB.allowed
+          ? { tx: tx('EscrowFinish', `Released $${amountB} → ${CAST.supplierB.name}`, releaseHashB!) }
+          : { tx: tx('EscrowCreate', `Escrow held (not released) — ${CAST.supplierB.name}`, handleB.createHash) }),
         data: {
-          decision: assessB.decision, rationale: assessB.rationale,
-          model: assessB.model, ms: assessB.ms, fallback: assessB.fallback,
-          budgetAllocated: budget.allocated, gateAllowed: gB?.allowed,
+          verdict: gB.allowed ? 'APPROVED' : 'DENIED',
+          ...(gB.allowed ? {} : { halted: true }),
+          amlAction: amlB.action, decision: assessB.decision, rationale: assessB.rationale,
+          reasoning: assessB.reasoning, model: assessB.model, ms: assessB.ms, fallback: assessB.fallback,
+          budgetAllocated: budget.allocated, gateAllowed: gB.allowed,
           abstractAmount: amountB, credId: bIssueHash,
+          note: gB.allowed ? undefined : 'case halted at the bank gate — no funds released',
         } });
     } else {
-      // HOLD or delegation cap exceeded — no funds moved, no escrow created.
+      const haltReason = !proceedB
+        ? (drawB.reason ?? 'agent risk hold / AML / budget gate denied')
+        : 'agent credential unavailable — cannot present at the bank gate';
       patch('settle_b', { status: 'denied',
         data: {
-          decision: assessB.decision, rationale: assessB.rationale, reason: drawB.reason,
-          note: 'agent held — no funds moved',
+          verdict: 'DENIED', halted: true,
+          amlAction: amlB.action, decision: assessB.decision, rationale: assessB.rationale,
+          reasoning: assessB.reasoning, reason: haltReason,
+          model: assessB.model, ms: assessB.ms, fallback: assessB.fallback,
+          note: 'case halted — agent held, no funds moved',
         } });
     }
+    patch('caseB', { data: { verdict: caseVerdict(proceedB, gateAllowedB) } });
 
-    // ── STEP 10 · denial_budget — agentB attempts $500 → OPERATOR AGGREGATE budget DENIES
-    // The operator delegated a $150 aggregate task budget to this agent fleet for this run
-    // (distinct from Novartis's full KYB authority of $${maxDelegatedSpend}). After
-    // settle_a ($50) + settle_b ($60) = $110 allocated, only $40 remains. A $500 request
-    // pushes projected spend to $610, which exceeds the $150 demo fleet budget → DENIED.
-    const demoDelegationBudget = '150'; // operator's explicit fleet budget for this demo run
-    start({ id: 'denial_budget', phase: 'denial', actor: CAST.agentB.name,
-      title: `Denial #2 — operator delegation budget (allocated $${budget.allocated} + $500 > $${demoDelegationBudget} fleet budget)`,
-      body: `${CAST.agentB.flag} agentB attempts a $500 payment. The operator's $${demoDelegationBudget} fleet budget for this run has $${budget.allocated} allocated ($40 remaining). delegationCapCheck() denies: projected $${Number(budget.allocated) + 500} > fleet budget $${demoDelegationBudget}.` });
+    // ── CASE C · DENIED — Aria → Star Dragon Corporation Limited (OFAC SDN) ──
+    // The agent reasons about the SDN flag (real LLM), THEN the D6 hard gate
+    // blocks submission. The case HALTS — no escrow is ever created.
+    caseHeader('caseC', CAST.agentA.name,
+      `Case C · ${CAST.agentA.name} → ${CAST.amlTarget.name}`,
+      `${CAST.amlTarget.flag} A payment request to a sanctioned counterparty. The agent screens, reasons about the hit, and the D6 hard gate stops the payment before anything goes on-ledger.`);
 
-    const bigAmount = '500';
-    const capResult = delegationCapCheck({
-      maxDelegatedSpend: demoDelegationBudget,  // operator's per-run fleet delegation budget
-      allocatedTotal: budget.allocated,
-      requestedAllocation: bigAmount,
-    });
-
-    const remaining = Math.max(0, Number(demoDelegationBudget) - Number(budget.allocated));
-    // Model reacts to the budget denial.
-    const budgetDenialReact = await reason(
-      `You are Bravo, an autonomous logistics AI agent with a BRONZE credential. The operator delegated a $${demoDelegationBudget} fleet budget for this run. The fleet has already allocated $${budget.allocated} ($${remaining} remaining).`,
-      `You attempted a $${bigAmount} payment but the operator's fleet budget is $${demoDelegationBudget}, $${budget.allocated} is already allocated (only $${remaining} remaining). Briefly explain your adaptation strategy. One sentence.`,
-      { model: CONFIG.deepseek.flashModel, maxTokens: 700 },
-    );
-    patch('denial_budget', { status: 'denied', data: {
-      requestedAmount: bigAmount, demoDelegationBudget, allocatedTotal: budget.allocated,
-      remaining: String(remaining),
-      projectedTotal: String(Number(budget.allocated) + Number(bigAmount)),
-      denied: !capResult.allowed, reason: capResult.reason ?? 'cap check passed (unexpected)',
-      agentReaction: budgetDenialReact.content, model: budgetDenialReact.model,
-      ms: budgetDenialReact.ms, fallback: budgetDenialReact.fallback,
-    } });
-
-    // ── STEP 11 · denial_aml — payment to Star Dragon Corporation Limited → D6 gate denies ──────
     start({ id: 'denial_aml', phase: 'denial', actor: CAST.agentA.name,
-      title: `Denial #3 — AML gate (${CAST.amlTarget.name})`,
-      body: `${CAST.amlTarget.flag} agentA attempts a payment to ${CAST.amlTarget.name}. FIRST, the agent reasons about the SDN flag (real LLM call). THEN the D6 hard gate blocks submission.` });
+      title: `${CAST.agentA.name} attempts payment to ${CAST.amlTarget.name}`,
+      body: `${CAST.amlTarget.flag} FIRST the agent reasons about the OFAC SDN screening result (real LLM call, reasoning shown). THEN the D6 hard gate blocks submission — the case halts.` });
 
     const amlScreen = screenName(amlMatcher, CAST.amlTarget.name);
-
-    // Agent reasons about the flagged counterparty (REAL LLM call) — model must recognise the risk.
     const amlReasoning = await assessCounterparty({
       counterpartyName: CAST.amlTarget.name,
       amlAction: amlScreen.action,
@@ -457,20 +509,94 @@ export async function runCrossBorderScenario(deps: {
       tier: 'BRONZE',
       maxTxAmount: TIER_CEILING.BRONZE,
     });
-
-    // Deterministic D6 gate blocks the payment regardless of LLM response.
     const amlDenied = amlScreen.action === 'DENY';
 
     patch('denial_aml', { status: 'denied', data: {
+      verdict: 'DENIED', halted: true,
       counterparty: CAST.amlTarget.name, amlAction: amlScreen.action, amlScore: amlScreen.score,
       matchedName: amlScreen.matchedName, amlDenied,
+      decision: amlReasoning.decision, rationale: amlReasoning.rationale,
       agentDecision: amlReasoning.decision, agentRationale: amlReasoning.rationale,
-      agentReasoning: amlReasoning.reasoning,
+      reasoning: amlReasoning.reasoning, agentReasoning: amlReasoning.reasoning,
       model: amlReasoning.model, ms: amlReasoning.ms, fallback: amlReasoning.fallback,
       d6Gate: 'DENY — payment blocked before submission (D6 hard gate)',
     } });
+    patch('caseC', { data: { verdict: 'DENIED' } });
 
-    // ── STEP 12 · contrast — uncertified agent → tecNO_PERMISSION ────────────
+    // ── CASE D · DENIED — Aria → $300 over BRONZE tier ceiling ──────────────
+    caseHeader('caseD', CAST.agentA.name,
+      `Case D · ${CAST.agentA.name} → $300 payment`,
+      `${CAST.agentA.flag} The agent attempts a payment larger than its BRONZE ceiling. effectiveCeiling() denies before submission — the case halts.`);
+
+    const overAmount = '300';
+    const eff = effectiveCeiling('BRONZE', TIER_CEILING.BRONZE, maxDelegatedSpend);
+    const tierDenied = Number(overAmount) > Number(eff);
+
+    start({ id: 'denial_tier', phase: 'denial', actor: CAST.agentA.name,
+      title: `Denial — tier ceiling ($${overAmount} > BRONZE $${TIER_CEILING.BRONZE})`,
+      body: `${CAST.agentA.flag} ${CAST.agentA.name} attempts a $${overAmount} payment. BRONZE ceiling is $${TIER_CEILING.BRONZE}. The agent reasons about the limit, then the gate halts the case.` });
+
+    const tierDenialReact = await reason(
+      `You are Aria, an autonomous procurement AI agent with a BRONZE MeshCredit credential (hard per-payment ceiling $${TIER_CEILING.BRONZE}). ` +
+      `You must respect your credential's limits and explain your reasoning clearly.`,
+      `You attempted a $${overAmount} payment but your effective ceiling is $${eff}. ` +
+      `Reason about why the ceiling exists and how you will adapt (split the order, defer, or escalate to a human), then conclude with your chosen course of action.`,
+      { model: CONFIG.deepseek.flashModel, maxTokens: CONFIG.deepseek.maxTokens },
+    );
+    patch('denial_tier', { status: 'denied', data: {
+      verdict: 'DENIED', halted: true,
+      requestedAmount: overAmount, tierCeiling: TIER_CEILING.BRONZE, effectiveCeiling: eff,
+      denied: tierDenied, reason: `tier ceiling: $${TIER_CEILING.BRONZE}, requested: $${overAmount} → DENIED`,
+      agentReaction: tierDenialReact.content, rationale: tierDenialReact.content,
+      reasoning: tierDenialReact.reasoning,
+      model: tierDenialReact.model, ms: tierDenialReact.ms, fallback: tierDenialReact.fallback,
+    } });
+    patch('caseD', { data: { verdict: 'DENIED' } });
+
+    // ── CASE E · DENIED — Bravo → $500 over operator delegation budget ──────
+    // After Case A ($50) + Case B ($60) = $110 allocated of the $150 fleet
+    // budget, only $40 remains. A $500 request → projected $610 > $150 → DENIED.
+    caseHeader('caseE', CAST.agentB.name,
+      `Case E · ${CAST.agentB.name} → $500 payment`,
+      `${CAST.agentB.flag} The fleet has spent $${budget.allocated} of its $${fleetBudget} budget. A $500 request exceeds what remains — delegationCapCheck() halts the case.`);
+
+    const bigAmount = '500';
+    const capResult = delegationCapCheck({
+      maxDelegatedSpend: fleetBudget,           // operator's per-run fleet delegation budget
+      allocatedTotal: budget.allocated,
+      requestedAllocation: bigAmount,
+    });
+    const remaining = Math.max(0, Number(fleetBudget) - Number(budget.allocated));
+
+    start({ id: 'denial_budget', phase: 'denial', actor: CAST.agentB.name,
+      title: `Denial — delegation budget (allocated $${budget.allocated} + $${bigAmount} > $${fleetBudget} fleet budget)`,
+      body: `${CAST.agentB.flag} ${CAST.agentB.name} attempts a $${bigAmount} payment. The operator's $${fleetBudget} fleet budget has $${budget.allocated} allocated ($${remaining} remaining). The agent reasons, then the cap halts the case.` });
+
+    const budgetDenialReact = await reason(
+      `You are Bravo, an autonomous logistics AI agent with a BRONZE MeshCredit credential. The operator delegated a $${fleetBudget} fleet budget for this run; the fleet has already allocated $${budget.allocated} ($${remaining} remaining). ` +
+      `You must respect the operator's delegated budget and explain your reasoning clearly.`,
+      `You attempted a $${bigAmount} payment but only $${remaining} of the $${fleetBudget} fleet budget remains. ` +
+      `Reason about why operator budget caps matter for delegated autonomy, and how you will adapt (request a budget top-up, defer, or split), then conclude.`,
+      { model: CONFIG.deepseek.flashModel, maxTokens: CONFIG.deepseek.maxTokens },
+    );
+    patch('denial_budget', { status: 'denied', data: {
+      verdict: 'DENIED', halted: true,
+      requestedAmount: bigAmount, demoDelegationBudget: fleetBudget, allocatedTotal: budget.allocated,
+      remaining: String(remaining),
+      projectedTotal: String(Number(budget.allocated) + Number(bigAmount)),
+      denied: !capResult.allowed, reason: capResult.reason ?? 'cap check passed (unexpected)',
+      agentReaction: budgetDenialReact.content, rationale: budgetDenialReact.content,
+      reasoning: budgetDenialReact.reasoning,
+      model: budgetDenialReact.model, ms: budgetDenialReact.ms, fallback: budgetDenialReact.fallback,
+    } });
+    patch('caseE', { data: { verdict: 'DENIED' } });
+
+    // ══ PHASE 3 · BUREAU ENFORCEMENT (protocol-level controls) ════════════════
+    caseHeader('caseGov', 'MeshCredit',
+      'Bureau enforcement — protocol-level controls',
+      '◇ Beyond per-payment gating: the ledger refuses uncertified agents at consensus, code-swaps are caught at verification, and a single revocation is a surgical kill-switch.');
+
+    // ── STEP · contrast — uncertified agent → tecNO_PERMISSION ───────────────
     start({ id: 'contrast', phase: 'contrast', actor: 'Ledger',
       title: 'An uncertified agent is denied by consensus',
       body: `${CAST.compromised.flag} No credential → EscrowFinish rejected by validators before the bank sees the request.` });
@@ -488,7 +614,7 @@ export async function runCrossBorderScenario(deps: {
       tx: tx('EscrowCreate', 'Uncertified agent (its escrow)', badHandle.createHash),
       data: { declined, code: denyCode || 'tecNO_PERMISSION' } });
 
-    // ── STEP 13 · codeswap — detect code-hash mismatch on compromisedAgent ───
+    // ── STEP · codeswap — detect code-hash mismatch on compromisedAgent ──────
     start({ id: 'codeswap', phase: 'governance', actor: 'MeshCredit',
       title: 'Code-swap caught at verification',
       body: `${CAST.compromised.flag} A relying party recomputes the agent skill hash. Tampered runtime no longer matches the 'sh' stamped in the credential — version-pinning and accountability, on-ledger.` });
@@ -499,16 +625,14 @@ export async function runCrossBorderScenario(deps: {
     const swap = verifyAttestation(readFileSync(harnessPath), tampered, attestation);
     patch('codeswap', { status: 'done', data: {
       auditedRecognized: good.recognized, tamperedRecognized: swap.recognized,
-      reason: swap.reason, sh: viewFresh?.terms.sh,
+      reason: swap.reason, sh: (viewFresh?.terms as any)?.sh,
     } });
 
-    // ── STEP 14 · kill — revoke ONLY compromisedAgent ────────────────────────
-    // agentA and agentB are NOT revoked — their credentials remain active.
+    // ── STEP · kill — revoke ONLY compromisedAgent ───────────────────────────
     start({ id: 'kill', phase: 'governance', actor: 'MeshCredit',
       title: 'Kill-switch — ONLY compromisedAgent revoked',
       body: `${CAST.compromised.flag} A single CredentialDelete removes compromisedAgent from every gated venue. agentA (${CAST.agentA.name}) and agentB (${CAST.agentB.name}) remain unaffected.` });
 
-    // Issue then immediately revoke a credential for compromisedAgent (so we have one to revoke).
     const compKya = await underwrite(c, compromisedAgent.address, offChainFresh, {
       attestation, operatorCredId: opView?.credId, version: 3,
     });
@@ -516,9 +640,7 @@ export async function runCrossBorderScenario(deps: {
     await acceptCredential(c, compromisedAgent, treasury.address);
     const killHash = await revokeCredential(c, treasury, compromisedAgent.address);
 
-    // Confirm compromisedAgent's gate is now blocked.
     const gAfterKill = await gateCheck(c, compromisedAgent.address, treasury.address, 'TIER-1', {});
-    // Confirm agentA is still alive.
     const gAgentAAfterKill = await gateCheck(c, agentA.address, treasury.address, 'TIER-1', {});
 
     patch('kill', { status: 'denied',
@@ -531,45 +653,48 @@ export async function runCrossBorderScenario(deps: {
         note: 'agentA and agentB remain active; only compromisedAgent revoked',
       } });
 
-    // ── STEP 15 · confirm_a — agentA makes one more payment after kill-switch ─
+    // ── STEP · confirm_a — agentA makes one more payment after kill-switch ────
     const confirmAmount = '30';
     start({ id: 'confirm_a', phase: 'payment', actor: CAST.agentA.name,
       title: `${CAST.agentA.name} pays after kill (confirms unaffected)`,
       body: `${CAST.agentA.flag} agentA was never revoked. This payment succeeds, proving the kill-switch is surgical.` });
 
-    const drawConfirm = drawBudget(budget, confirmAmount, maxDelegatedSpend);
+    const drawConfirm = budgetCheck(budget, confirmAmount, fleetBudget);
 
     let confirmOk = false;
     let confirmHash: string | undefined;
-    if (gAgentAAfterKill.allowed && drawConfirm.ok) {
+    if (gAgentAAfterKill.allowed && drawConfirm.ok && credIdA) {
       const handleConfirm = await submitPaymentForApproval(
         c, demoAgent, bank.address, '50000',
         dossierRef('confirm_a:' + agentA.address),
       );
       const gConfirm = await gateCheck(c, agentA.address, treasury.address, 'TIER-1', { amount: confirmAmount });
       if (gConfirm.allowed) {
-        confirmHash = await approveAndRelease(c, agentA, demoAgent.address, handleConfirm, [viewFresh!.credId]);
+        confirmHash = await approveAndRelease(c, agentA, demoAgent.address, handleConfirm, [credIdA]);
+        commitBudget(budget, confirmAmount); // spend only after the confirming payment settled
         confirmOk = true;
       }
-      // If gate blocks: leave escrow to auto-refund. No EscrowCancel (tecNO_PERMISSION guard).
     }
 
     patch('confirm_a', { status: confirmOk ? 'done' : 'denied',
       ...(confirmHash ? { tx: tx('EscrowFinish', `${CAST.agentA.name} — confirmed active`, confirmHash) } : {}),
       data: {
+        verdict: confirmOk ? 'APPROVED' : 'DENIED',
         agentA: agentA.address, agentAStillActive: gAgentAAfterKill.allowed,
         confirmOk, amount: confirmAmount, budgetAllocated: budget.allocated,
         note: 'kill-switch did not affect agentA — surgical revocation works',
       } });
 
     // ── Final summary ─────────────────────────────────────────────────────────
-    emit({ type: 'demo_done', ok: true, /* always emit done=true if we reached here without throwing */
+    emit({ type: 'demo_done', ok: true,
       summary: {
         operatorUid: CAST.operator.uid, operatorDataSource: zefixDetail._dataSource,
-        btier, maxDelegatedSpend, budgetAllocated: budget.allocated,
+        btier, maxDelegatedSpend, fleetBudget, budgetAllocated: budget.allocated,
+        tier: kyaFresh.terms.tier,
         agentA: agentA.address, agentB: agentB.address,
+        approvedCases: ['lagos_nigeria', 'taipei_taiwan'],
+        deniedCases: ['aml_sdn', 'tier_ceiling', 'delegation_budget'],
         compromisedRevoked: !gAfterKill.allowed, agentAStillActive: gAgentAAfterKill.allowed,
-        denials: ['tier_ceiling', 'delegation_cap', 'aml_d6'],
         amlTarget: CAST.amlTarget.name, amlAction: amlScreen.action,
       } });
     return { ok: true };

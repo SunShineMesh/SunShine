@@ -65,7 +65,7 @@ export const api = {
 export interface DemoStep {
   id: string;
   seq: number;
-  phase: 'setup' | 'identity' | 'reasoning' | 'payment' | 'contrast' | 'governance' | 'error';
+  phase: 'setup' | 'identity' | 'reasoning' | 'payment' | 'denial' | 'case' | 'contrast' | 'governance' | 'error';
   actor: string;
   title: string;
   body?: string;
@@ -78,6 +78,14 @@ export interface DemoStep {
     confidence?: number;
     /** v3 tier name (BRONZE/SILVER/GOLD/PLATINUM/DENIED). */
     tier_v3?: PassportTier;
+    /** v3 case loop: this step is a case divider. */
+    caseHeader?: boolean;
+    /** v3 case loop: case/step verdict. */
+    verdict?: 'APPROVED' | 'DENIED';
+    /** v3 case loop: the case halted at this gate (no funds moved). */
+    halted?: boolean;
+    /** v3: the agent's chain-of-thought (reasoning_content) for this decision. */
+    reasoning?: string;
   };
 }
 /** Kick off the streamed cross-border scenario (progress arrives over SSE). */
