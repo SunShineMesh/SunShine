@@ -42,7 +42,9 @@ export const CONFIG = {
     flashModel: process.env.DEEPSEEK_FLASH_MODEL ?? 'deepseek-v4-flash',
   },
   // World ID IDKit v4 — backend-only signing key must NEVER be sent to the frontend.
-  // Read either WORLDID_RP_SIGNING_KEY or legacy WORLDID_KEY (same value).
+  // WORLDID_RP_SIGNING_KEY is the canonical name. WORLDID_KEY is kept as a legacy
+  // fallback for existing .env files predating the rename; it is not listed in
+  // .env.example, so new installs will not see it. No behavioural difference.
   worldId: {
     rpSigningKey: process.env.WORLDID_RP_SIGNING_KEY ?? process.env.WORLDID_KEY ?? '',
     rpId: process.env.WORLDID_RP_ID ?? '',
@@ -83,23 +85,35 @@ export interface IntegrationStatus {
   deepseek: { live: boolean };
 }
 
-export function integrationStatus(): IntegrationStatus {
+/** Pure computation — accepts slices of the config so tests can inject known values. */
+export interface IntegrationStatusInput {
+  worldId: { rpSigningKey: string; rpId: string };
+  zefix: { username: string; password: string; useFixture: boolean };
+  aml: { useFixture: boolean; snapshotPath: string };
+  deepseek: { apiKey: string };
+}
+
+export function computeIntegrationStatus(cfg: IntegrationStatusInput): IntegrationStatus {
   return {
     worldId: {
-      live: CONFIG.worldId.rpSigningKey !== '' && CONFIG.worldId.rpId !== '',
-      rpId: CONFIG.worldId.rpId || '(not set)',
+      live: cfg.worldId.rpSigningKey !== '' && cfg.worldId.rpId !== '',
+      rpId: cfg.worldId.rpId || '(not set)',
     },
     zefix: {
-      live: CONFIG.zefix.username !== '' && CONFIG.zefix.password !== '' && !CONFIG.zefix.useFixture,
-      useFixture: CONFIG.zefix.useFixture || CONFIG.zefix.username === '',
+      live: cfg.zefix.username !== '' && cfg.zefix.password !== '' && !cfg.zefix.useFixture,
+      useFixture: cfg.zefix.useFixture || cfg.zefix.username === '',
     },
     aml: {
       // "live" means: fixture mode is explicitly off AND the full snapshot file exists.
-      live: !CONFIG.aml.useFixture && existsSync(CONFIG.aml.snapshotPath),
-      snapshotPath: CONFIG.aml.snapshotPath,
+      live: !cfg.aml.useFixture && existsSync(cfg.aml.snapshotPath),
+      snapshotPath: cfg.aml.snapshotPath,
     },
     deepseek: {
-      live: CONFIG.deepseek.apiKey !== '',
+      live: cfg.deepseek.apiKey !== '',
     },
   };
+}
+
+export function integrationStatus(): IntegrationStatus {
+  return computeIntegrationStatus(CONFIG);
 }
