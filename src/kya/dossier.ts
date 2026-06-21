@@ -7,6 +7,8 @@
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import type { Signals } from './scorecard.js';
+import type { DimensionRecord } from './dimension.js';
+import type { ScreeningResult } from './aml.js';
 
 export interface Dossier {
   ref: string;                 // 16-hex content pointer (== on-ledger r)
@@ -18,6 +20,10 @@ export interface Dossier {
   tier: string;
   signals: Signals;
   screening: { sanctions: 'clear' | 'hit' | 'stub'; pep: 'clear' | 'hit' | 'stub'; provider: string };
+  /** Six-dimension evidence bundle (one record per D1–D6). Optional for backward-compat. */
+  dimensions?: DimensionRecord[];
+  /** Full AML screening result (stored off-ledger; only the action goes on-ledger). */
+  amlResult?: ScreeningResult;
   createdAt: number;           // unix ms (caller-supplied; keeps this module pure)
 }
 
