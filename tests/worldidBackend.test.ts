@@ -116,22 +116,19 @@ describe('extractNullifier', () => {
     expect(extractNullifier(idkitResultV4)).toBe('0xDEAD1234');
   });
 
-  it('extracts nullifier from v3 legacy result (responses[0].nullifier / nullifier_hash)', () => {
-    // v3 uses nullifier directly in responses
+  it('extracts nullifier from v3 legacy result (top-level nullifier_hash, no responses[0].nullifier)', () => {
+    // v3 legacy bridge shape: nullifier_hash lives at the TOP LEVEL,
+    // NOT inside responses[0].nullifier.  This exercises the fallback
+    // branch in extractNullifier (lines 66-68 of backend.ts) that the
+    // v4 path never reaches.
     const idkitResultV3Legacy = {
       protocol_version: '3.0',
-      nonce: 'abc456',
+      nullifier_hash: '0xBEEF5678',
+      merkle_root: '0x000',
+      proof: 'abc...',
+      credential_type: 'orb',
       action: 'meshcredit-agent-verify',
-      responses: [
-        {
-          identifier: 'proof_of_human',
-          nullifier: '0xBEEF5678',
-          proof: 'abc...',
-          merkle_root: '0x000',
-        },
-      ],
-      user_presence_completed: false,
-      environment: 'production',
+      // NOTE: no `responses` array — this is the classic v3 flat shape
     };
     expect(extractNullifier(idkitResultV3Legacy)).toBe('0xBEEF5678');
   });
@@ -231,11 +228,11 @@ describe('rpSignatureHandler with signing key present', () => {
       // SDK unavailable in test env: the graceful-error branch fired.
       // Confirm this is the *error* fallback (has a descriptive message),
       // NOT the absent-key early-return (which says "wiring shown, proof pending").
-      expect(typeof call.message).toBe('string');
-      // The absent-key message is "wiring shown, proof pending"; if the
-      // signing path was entered the message will differ (or sig/nonce present).
-      // Either is acceptable — what's NOT acceptable is that we never reached
-      // the signing branch at all.
+      // The absent-key path returns exactly "wiring shown, proof pending";
+      // the signing-path graceful-error branch produces a different message
+      // (e.g. "signing unavailable: ..."). If the key was properly read and
+      // the signing path entered, the message MUST differ.
+      expect(call.message).not.toBe('wiring shown, proof pending');
     } else {
       // SDK was available: real signature returned
       expect(call).toHaveProperty('sig');
@@ -274,8 +271,9 @@ describe('verifyProofHandler nullifier replay prevention', () => {
 
     // Reset the in-process store to a known-empty state.
     // We do this by clearing the store's internal memory map directly.
-    // The exported instance uses ':memory:' path (set in test env), so we
-    // can just add/check via the public API.
+    // The exported instance uses ':memory:' path because WORLDID_NULLIFIER_STORE
+    // is set to ':memory:' in vitest.config.ts, so state is fully in-process
+    // and isolated across test runs and CI shards.
     const store: NullifierStore = mod.nullifierStore as NullifierStore;
 
     // Provide a unique nullifier for this test run so it doesn't collide
