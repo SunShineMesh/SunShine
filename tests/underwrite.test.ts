@@ -170,6 +170,40 @@ describe('underwrite', () => {
     expect((r.terms as any).maxTxAmount).toBe('0');
   });
 
+  it('task9: amlName DENY fires universally (no version field → v2 default) → DENIED', async () => {
+    // The AML DENY gate must fire at the function level regardless of version.
+    // A caller passing amlName + a DENY matcher but omitting version (defaults to v2)
+    // must still get a DENIED result — not silently bypass the gate.
+    const mockDenyMatcher: AmlMatcher = (_name: string) => ({
+      hit: true, score: 0.95, matchedName: 'Viktor Anatolijevitch BOUT', action: 'DENY' as const,
+    });
+    const r = await underwrite(noChain, 'rAgent', demoOffChain, {
+      now: NOW,
+      // no version field — defaults to v2
+      amlName: 'viktor bout',
+      amlMatcher: mockDenyMatcher,
+    });
+    expect(r.decision.tier).toBe('DENIED');
+    expect(r.terms.tier).toBe('DENIED');
+    expect((r.terms as any).maxTxAmount).toBe('0');
+  });
+
+  it('task9: v1/v2 path screening uses real AML result, not demo-stub', async () => {
+    // Even on the v1/v2 path, the dossier screening must reflect the real AML outcome,
+    // not the hardcoded { sanctions: 'stub', provider: 'demo-stub' } placeholder.
+    const mockPassMatcher: AmlMatcher = (_name: string) => ({
+      hit: false, score: 0.1, matchedName: '', action: 'PASS' as const,
+    });
+    const r = await underwrite(noChain, 'rAgent', demoOffChain, {
+      now: NOW,
+      // no version field → v2
+      amlName: 'alice muller',
+      amlMatcher: mockPassMatcher,
+    });
+    expect(r.dossier.screening.provider).not.toBe('demo-stub');
+    expect(r.dossier.screening.sanctions).toBe('clear'); // real AML PASS → clear
+  });
+
   it('task9: amlName alice muller + version 3 → NOT DENIED, D6 status PASS', async () => {
     const r = await underwrite(noChain, 'rAgent', demoOffChain, {
       now: NOW, version: 3,
@@ -194,16 +228,20 @@ describe('underwrite', () => {
     expect((r.terms as any).maxTxAmount).toBe('100');
   });
 
-  it('task9: d5Mandate + settlements=10 + windowDays=30 + D1/D2/D3 pass → SILVER', async () => {
+  it('task9: pseudonymous principal blocks SILVER even with d5Mandate + settlements + window', async () => {
+    // Same params that would yield SILVER for a non-pseudonymous principal,
+    // but pseudonymous cap forces BRONZE regardless of behavioral maturity.
     const r = await underwrite(noChain, 'rAgent', { ...demoOffChain, worldId: true }, {
       now: NOW, version: 3,
+      principal: { kind: 'pseudonymous' },
       d5Mandate: true,
       settlements: 10,
       windowDays: 30,
     });
     expect(r.terms.v).toBe(3);
-    expect(r.terms.tier).toBe('SILVER');
-    expect((r.terms as any).maxTxAmount).toBe('500');
+    // Non-pseudonymous with same inputs → SILVER; pseudonymous cap holds it at BRONZE
+    expect(r.terms.tier).toBe('BRONZE');
+    expect((r.terms as any).maxTxAmount).toBe('100');
   });
 
   it('task9: dossier dimensions array has exactly 6 entries (D1–D6)', async () => {

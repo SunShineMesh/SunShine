@@ -183,10 +183,12 @@ export async function underwrite(
     ? (principalIsPseudonymous(opts.principal) ? 'pseudonymous' : opts.principal.kind)
     : (signals.operatorBacked ? 'org' : (signals.worldId ? 'individual' : 'pseudonymous'));
 
-  if (version === 3) {
-    // ── v3 path: tier+confidence engine ───────────────────────────────────────
-    // AML DENY hard gate: build a minimal DENIED dossier and return immediately.
-    if (resolvedAmlResult?.action === 'DENY') {
+  // ── AML DENY hard gate (universal — fires before version branch) ─────────────
+  // Any DENY result aborts immediately with a DENIED credential regardless of version.
+  // This ensures callers on v1/v2 cannot silently bypass the AML gate by omitting version.
+  if (resolvedAmlResult?.action === 'DENY') {
+    const screening = { sanctions: 'hit' as const, pep: 'clear' as const, provider: 'opensanctions' };
+    if (version === 3) {
       const dims = buildV3Dimensions(signals, { now, d5Mandate: opts.d5Mandate, settlements: opts.settlements, amlResult: resolvedAmlResult });
       const mask = dimsBitmask(dims);
       const dossier = buildDossier({
@@ -197,7 +199,7 @@ export async function underwrite(
         score: decision.score,
         tier: 'DENIED',
         signals,
-        screening: { sanctions: 'hit', pep: 'clear', provider: 'opensanctions' },
+        screening,
         dimensions: dims,
         amlResult: resolvedAmlResult,
         createdAt: now,
@@ -216,6 +218,33 @@ export async function underwrite(
       };
       return { decision: { ...decision, tier: 'DENIED', maxTxAmount: '0' }, terms, signals, dossier };
     }
+    // v1 / v2 AML DENY — return without dimensions (v1/v2 dossier format)
+    const dossier = buildDossier({
+      agentAddr,
+      operatorCredId: opts.operatorCredId,
+      harnessHashFull: att?.harnessHashFull ?? '',
+      skillHashFull: att?.skillHashFull ?? '',
+      score: decision.score,
+      tier: 'DENIED',
+      signals,
+      screening,
+      amlResult: resolvedAmlResult,
+      createdAt: now,
+    });
+    const terms: TrustTerms = version === 1
+      ? { v: 1, tier: 'DENIED', maxTxAmount: '0', score: decision.score, exp, ref: dossier.ref }
+      : {
+          v: 2, tier: 'DENIED', maxTxAmount: '0', score: decision.score, exp,
+          ref: dossier.ref, disposition: 'D',
+          ...(att ? { ih: att.ih, sh: att.sh } : {}),
+          ...(opts.operatorCredId ? { op: prefix8(opts.operatorCredId) } : {}),
+        };
+    return { decision: { ...decision, tier: 'DENIED', maxTxAmount: '0' }, terms, signals, dossier };
+  }
+
+  if (version === 3) {
+    // ── v3 path: tier+confidence engine ───────────────────────────────────────
+    // (AML DENY already handled above; only non-DENY results reach here)
 
     const dims = buildV3Dimensions(signals, { now, d5Mandate: opts.d5Mandate, settlements: opts.settlements, amlResult: resolvedAmlResult });
     const mask = dimsBitmask(dims);
@@ -284,7 +313,12 @@ export async function underwrite(
     return { decision, terms, signals, dossier };
   }
 
-  // ── v1 / v2 path (unchanged) ─────────────────────────────────────────────
+  // ── v1 / v2 path ─────────────────────────────────────────────────────────
+  // Build screening from the real AML result (if any) rather than a stub.
+  // This satisfies the honesty rule: every dimension carries a named issuer + evidence.
+  const v12Screening = resolvedAmlResult
+    ? { sanctions: resolvedAmlResult.action === 'DENY' ? 'hit' as const : 'clear' as const, pep: 'clear' as const, provider: 'opensanctions' }
+    : { sanctions: 'clear' as const, pep: 'clear' as const, provider: 'default' };
   const dossier = buildDossier({
     agentAddr,
     operatorCredId: opts.operatorCredId,
@@ -293,7 +327,8 @@ export async function underwrite(
     score: decision.score,
     tier: decision.tier,
     signals,
-    screening: { sanctions: 'stub', pep: 'stub', provider: 'demo-stub' },
+    screening: v12Screening,
+    ...(resolvedAmlResult ? { amlResult: resolvedAmlResult } : {}),
     createdAt: now,
   });
 
