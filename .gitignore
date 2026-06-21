@@ -21,5 +21,9 @@ smoke-pivot.ts
 smoke-tierb.ts
 smoke.mjs
 setup-demo-wallet.ts
-# Large AML CSV snapshots — only the small fixture is committed
+# Large AML CSV snapshots (multi-MB) — gitignored to keep the repo push-friendly.
+# Only the small JSON fixture (data/sanctions_fixture.json) is committed.
+# To reproduce the full-CSV code path locally, download once:
+#   curl -L -o data/sanctions_snapshot_20260621.csv \
+#     "https://data.opensanctions.org/datasets/latest/us_ofac_sdn/targets.simple.csv"
 data/*.csv

@@ -97,10 +97,26 @@ describe('screenName — alias matching', () => {
 });
 
 describe('screenName — thresholds', () => {
-  it('score >= 0.88 → DENY, 0.80–0.87 → REVIEW, < 0.80 → PASS', () => {
-    // We can verify the threshold logic directly via screenName helper
+  it('score >= 0.88 → DENY: viktor bout', () => {
     const result = screenName(matcher, 'viktor bout');
     expect(result.action).toBe('DENY');
+    expect(result.score).toBeGreaterThanOrEqual(0.88);
+  });
+
+  it('0.80–0.87 → REVIEW: "viktor bout senior" scores in the review band', () => {
+    // "viktor bout senior" normalises to "viktor bout senior"; best match is
+    // "viktor bout" with JW ≈ 0.8677 — squarely in the 0.80–0.87 REVIEW band.
+    const result = screenName(matcher, 'viktor bout senior');
+    expect(result.action).toBe('REVIEW');
+    expect(result.score).toBeGreaterThanOrEqual(0.80);
+    expect(result.score).toBeLessThan(0.88);
+    expect(result.hit).toBe(false); // REVIEW is not a definitive hit
+  });
+
+  it('< 0.80 → PASS: alice muller', () => {
+    const result = screenName(matcher, 'alice muller');
+    expect(result.action).toBe('PASS');
+    expect(result.score).toBeLessThan(0.80);
   });
 });
 

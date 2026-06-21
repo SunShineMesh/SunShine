@@ -6,6 +6,16 @@
 // → REVIEW; < 0.80 → PASS.
 //
 // No external runtime deps beyond Node built-ins.
+//
+// CSV snapshot: `data/sanctions_snapshot_20260621.csv` is gitignored (multi-MB).
+// To reproduce the full-CSV code path, download it once with:
+//   curl -L -o data/sanctions_snapshot_20260621.csv \
+//     "https://data.opensanctions.org/datasets/latest/us_ofac_sdn/targets.simple.csv"
+// Tests and CI always use the small JSON fixture (SANCTIONS_FIXTURE=true).
+//
+// HONORIFICS note: the set intentionally includes 'ms' beyond the spec's listed
+// tokens (mr mrs dr al el von van de bin bint) — 'ms' is a standard English honorific
+// and its removal would create a false negative for names like "Ms Alice"; it is benign.
 
 import { readFileSync, existsSync } from 'node:fs';
 
@@ -112,12 +122,9 @@ function jaro(s1: string, s2: string): number {
 /** Jaro-Winkler with prefix scaling factor p=0.1 (max prefix 4 chars). */
 function jaroWinkler(s1: string, s2: string): number {
   const jaroSim = jaro(s1, s2);
-  const prefixLen = Math.min(
-    4,
-    [...Array(Math.min(s1.length, s2.length))].findIndex((_, i) => s1[i] !== s2[i]) === -1
-      ? Math.min(s1.length, s2.length)
-      : [...Array(Math.min(s1.length, s2.length))].findIndex((_, i) => s1[i] !== s2[i]),
-  );
+  const limit = Math.min(4, s1.length, s2.length);
+  let prefixLen = 0;
+  while (prefixLen < limit && s1[prefixLen] === s2[prefixLen]) prefixLen++;
   return jaroSim + prefixLen * 0.1 * (1 - jaroSim);
 }
 
