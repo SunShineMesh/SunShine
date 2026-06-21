@@ -9,6 +9,9 @@ export interface PassportData {
   credId?: string;
   score?: number;
   tier?: string;
+  /** v2: per-tx ceiling emitted by scenario as 'ceiling'. */
+  ceiling?: string;
+  /** v1 compat alias — prefer ceiling in v2. */
   maxTxAmount?: string;
   ih?: string;
   sh?: string;
@@ -96,16 +99,16 @@ function DimensionPanel({ dims }: { dims: DimensionRecord[] }) {
   );
 }
 
-function Ring({ score, color }: { score: number; color: string }) {
+function Ring({ confidence, color }: { confidence: number; color: string }) {
   const R = 34, C = 2 * Math.PI * R;
-  const pct = Math.max(0, Math.min(score, 100)) / 100;
+  const pct = Math.max(0, Math.min(confidence, 100)) / 100;
   return (
     <svg className="pp-ring" viewBox="0 0 80 80" width="80" height="80" aria-hidden>
       <circle cx="40" cy="40" r={R} fill="none" stroke="var(--line)" strokeWidth="6" />
       <circle cx="40" cy="40" r={R} fill="none" stroke={color} strokeWidth="6" strokeLinecap="round"
         strokeDasharray={`${C * pct} ${C}`} transform="rotate(-90 40 40)" style={{ transition: 'stroke-dasharray .9s cubic-bezier(.2,.8,.2,1)' }} />
-      <text x="40" y="38" textAnchor="middle" className="pp-ring-num">{score}</text>
-      <text x="40" y="52" textAnchor="middle" className="pp-ring-lbl">/ 100</text>
+      <text x="40" y="38" textAnchor="middle" className="pp-ring-num">{confidence}</text>
+      <text x="40" y="52" textAnchor="middle" className="pp-ring-lbl">%</text>
     </svg>
   );
 }
@@ -138,12 +141,14 @@ export function Passport({ d, pending }: { d: PassportData; pending?: boolean })
             </div>
           )}
         </div>
-        <Ring score={d.score ?? 0} color={color} />
+        {/* Ring shows confidence (0-100%) — not the legacy score */}
+        <Ring confidence={d.confidence ?? 0} color={color} />
       </div>
 
       <div className="pp-metrics">
-        <div className="pp-metric"><div className="ppm-l">Max payment</div><div className="ppm-v">${d.maxTxAmount ?? '—'}</div></div>
-        <div className="pp-metric"><div className="ppm-l">Trust score</div><div className="ppm-v">{d.score ?? '—'}</div></div>
+        {/* v2: ceiling field; v1 compat: maxTxAmount */}
+        <div className="pp-metric"><div className="ppm-l">Max payment</div><div className="ppm-v">${d.ceiling ?? d.maxTxAmount ?? '—'}</div></div>
+        <div className="pp-metric"><div className="ppm-l">Confidence</div><div className="ppm-v">{d.confidence !== undefined ? `${d.confidence}%` : '—'}</div></div>
         <div className="pp-metric"><div className="ppm-l">Status</div><div className="ppm-v" style={{ fontSize: 15, color }}>{d.revoked ? '○ revoked' : '● on-ledger'}</div></div>
       </div>
 

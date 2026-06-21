@@ -99,7 +99,12 @@ export default function Live() {
   const kya = steps.get('kya_fresh') ?? steps.get('kya');
   const kill = steps.get('kill');
   const reason = steps.get('reason');
-  const passport: PassportData | null = kya?.data ? { ...(kya.data as any), revoked: !!kill?.tx } : null;
+  // Only mark the passport revoked if the kill-switch targeted THIS agent (Aria), not the
+  // separate compromised agent. The kill step emits revokedAgent; compare to kya's agent field.
+  const kyaAgent = (kya?.data as any)?.agent as string | undefined;
+  const revokedAgent = (kill?.data as any)?.revokedAgent as string | undefined;
+  const isPassportRevoked = !!(kill?.tx && kyaAgent && revokedAgent && revokedAgent === kyaAgent);
+  const passport: PassportData | null = kya?.data ? { ...(kya.data as any), revoked: isPassportRevoked } : null;
   const txs = stepsArr.filter((s) => s.tx).map((s) => ({ ...s.tx!, id: s.id }));
 
   // Extract the D2 dimension from any step that carries dimensions (e.g. kya_fresh).
@@ -157,14 +162,6 @@ export default function Live() {
         ))}
       </div></div>
 
-      {/* Flywheel contrast — fresh BRONZE vs thick-file GOLD: the data-flywheel story */}
-      {(kyaFresh ?? kyaThick) && (
-        <div className="wrap">
-          <div className="live-section-lbl">Data flywheel — trust compounds with history</div>
-          <FlywheelContrast fresh={kyaFresh} thick={kyaThick} />
-        </div>
-      )}
-
       {summary && (
         <div className="wrap"><div className={'verdict ' + (summary.ok ? 'pass' : 'fail')}>
           {summary.ok
@@ -174,6 +171,14 @@ export default function Live() {
       )}
 
       <main className="wrap live-grid">
+        {/* Data flywheel — fresh BRONZE vs thick-file GOLD: spans both columns */}
+        {(kyaFresh ?? kyaThick) && (
+          <div className="live-flywheel-row">
+            <div className="live-section-lbl">Data flywheel — trust compounds with history</div>
+            <FlywheelContrast fresh={kyaFresh} thick={kyaThick} />
+          </div>
+        )}
+
         {/* left — the step timeline */}
         <section className="timeline" ref={timelineRef}>
           {stepsArr.length === 0 && (
@@ -231,8 +236,9 @@ function FlywheelContrast({ fresh, thick }: { fresh?: DemoStep; thick?: DemoStep
   const thickTier = td?.tier_v3 ?? td?.tier ?? 'GOLD';
   const freshConf = fd?.confidence !== undefined ? `${fd.confidence}%` : '—';
   const thickConf = td?.confidence !== undefined ? `${td.confidence}%` : '—';
-  const freshCeil = fd?.maxTxAmount ? `$${fd.maxTxAmount}` : '—';
-  const thickCeil = td?.maxTxAmount ? `$${td.maxTxAmount}` : '—';
+  // scenario emits 'ceiling'; fall back to 'maxTxAmount' for backward compat
+  const freshCeil = fd?.ceiling != null ? `$${fd.ceiling}` : fd?.maxTxAmount ? `$${fd.maxTxAmount}` : '—';
+  const thickCeil = td?.ceiling != null ? `$${td.ceiling}` : td?.maxTxAmount ? `$${td.maxTxAmount}` : '—';
   return (
     <>
       <div className="flywheel-banner">
@@ -316,8 +322,10 @@ function StepCard({ s }: { s: DemoStep }) {
 
 // Denial-specific explanation banners
 const DENIAL_REASONS: Record<string, (d: any) => string> = {
-  denial_tier:   (d) => `Tier ceiling $${d?.ceiling ?? d?.maxTxAmount ?? '?'} < requested $${d?.requested ?? d?.amount ?? '?'} — agent must earn a higher tier`,
-  denial_budget: (d) => `Daily budget exhausted — $${d?.remaining ?? '?'} remaining, $${d?.requested ?? d?.amount ?? '?'} requested`,
+  // scenario emits tierCeiling and requestedAmount for denial_tier
+  denial_tier:   (d) => `Tier ceiling $${d?.tierCeiling ?? d?.ceiling ?? d?.maxTxAmount ?? '?'} < requested $${d?.requestedAmount ?? d?.requested ?? d?.amount ?? '?'} — agent must earn a higher tier`,
+  // scenario emits remaining and requestedAmount for denial_budget
+  denial_budget: (d) => `Daily budget exhausted — $${d?.remaining ?? '?'} remaining, $${d?.requestedAmount ?? d?.requested ?? d?.amount ?? '?'} requested`,
   denial_aml:    (d) => `AML block — D6 matched sanctioned entity "${d?.matchedName ?? d?.amlTarget ?? '?'}" on OFAC SDN`,
   contrast:      ()  => 'Uncertified agent — ledger rejects with tecNO_PERMISSION before bank even sees it',
 };
@@ -367,12 +375,14 @@ function StepData({ s }: { s: DemoStep }) {
     case 'kya_thick': {
       const tier = d.tier_v3 ?? d.tier;
       const conf = d.confidence !== undefined ? `${d.confidence}%` : undefined;
+      // scenario emits 'ceiling'; fall back to 'maxTxAmount' for backward compat
+      const ceil = d.ceiling ?? d.maxTxAmount;
       return (
         <>
           <div className="sc-chips">
             <Chip k="tier" v={tier} accent />
             {conf && <Chip k="confidence" v={conf} />}
-            <Chip k="ceiling" v={`$${d.maxTxAmount}`} />
+            <Chip k="ceiling" v={ceil !== undefined ? `$${ceil}` : '—'} />
             {/* Honest labels: these data sources are simulated/cached in the demo */}
             <span className="honest-tag" title="World ID proof uses IDKit simulator in demo">World ID = simulator</span>
             <span className="honest-tag" title="Zefix business registry uses cached fixture in demo">Zefix = cached</span>
@@ -388,18 +398,22 @@ function StepData({ s }: { s: DemoStep }) {
     case 'reason':
       return d.decision ? <div className="sc-chips"><Chip k="agent decision" v={d.decision} good={d.decision === 'PROCEED'} bad={d.decision !== 'PROCEED'} /></div> : null;
 
-    // Settlement steps
+    // Settlement steps — scenario emits abstractAmount for settle_a/settle_b, amount for confirm_a
     case 'settle_a':
     case 'settle_b':
-    case 'confirm_a':
-      return <div className="sc-chips"><Chip k="amount" v={d.amount ? `$${d.amount}` : '—'} /><Chip k="status" v={d.status ?? 'OK'} good /></div>;
+    case 'confirm_a': {
+      const amt = d.abstractAmount ?? d.amount;
+      return <div className="sc-chips"><Chip k="amount" v={amt ? `$${amt}` : '—'} /><Chip k="status" v={d.status ?? 'OK'} good /></div>;
+    }
 
     // Denial steps
     case 'denial_tier':
-      return <div className="sc-chips"><Chip k="tier ceiling" v={`$${d.ceiling ?? d.maxTxAmount}`} /><Chip k="requested" v={`$${d.requested ?? d.amount}`} /><Chip k="verdict" v="DENIED" bad /></div>;
+      // scenario emits tierCeiling and requestedAmount for this step
+      return <div className="sc-chips"><Chip k="tier ceiling" v={`$${d.tierCeiling ?? d.ceiling ?? d.maxTxAmount ?? '?'}`} /><Chip k="requested" v={`$${d.requestedAmount ?? d.requested ?? d.amount ?? '?'}`} /><Chip k="verdict" v="DENIED" bad /></div>;
 
     case 'denial_budget':
-      return <div className="sc-chips"><Chip k="remaining budget" v={`$${d.remaining ?? '—'}`} /><Chip k="requested" v={`$${d.requested ?? d.amount}`} /><Chip k="verdict" v="DENIED" bad /></div>;
+      // scenario emits requestedAmount and remaining
+      return <div className="sc-chips"><Chip k="remaining budget" v={`$${d.remaining ?? '—'}`} /><Chip k="requested" v={`$${d.requestedAmount ?? d.requested ?? d.amount ?? '?'}`} /><Chip k="verdict" v="DENIED" bad /></div>;
 
     case 'denial_aml':
       return <div className="sc-chips"><Chip k="D6 AML" v={d.amlAction ?? 'DENY'} bad /><Chip k="matched" v={d.matchedName ?? d.amlTarget ?? '—'} bad /><Chip k="verdict" v="BLOCKED" bad /></div>;
@@ -414,7 +428,11 @@ function StepData({ s }: { s: DemoStep }) {
       return <div className="sc-chips"><Chip k="ledger verdict" v={d.code ?? 'tecNO_PERMISSION'} bad /></div>;
 
     case 'kill':
-      return <div className="sc-chips"><Chip k="gate after revoke" v={d.gateAllowed ? 'ALLOW' : 'DENY'} bad={!d.gateAllowed} /></div>;
+      // scenario emits compromisedGateAllowed and agentAGateAllowed
+      return <div className="sc-chips">
+        <Chip k="compromised gate" v={d.compromisedGateAllowed ? 'ALLOW' : 'DENY'} bad={!d.compromisedGateAllowed} />
+        <Chip k="Aria gate" v={d.agentAGateAllowed ? 'ALLOW' : 'DENY'} good={!!d.agentAGateAllowed} />
+      </div>;
 
     default:
       return null;
