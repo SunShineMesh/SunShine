@@ -1,86 +1,127 @@
 # MeshCredit
 
-**An on-ledger trust bureau for AI agents — built on the XRP Ledger.**
+**A multi-dimensional agent passport and on-ledger trust bureau for cross-border AI payments — built on the XRP Ledger.**
 
-MeshCredit is the *Equifax of the agent economy*. It runs **Know-Your-Agent (KYA)** and
+MeshCredit is the *trust bureau of the agent economy*. It runs **Know-Your-Agent (KYA)** and
 **Know-Your-Business (KYB)** checks on an autonomous agent and its operator, then issues the
-verdict as a **tamper-evident credential that lives on the XRP Ledger** (XLS-70). Any bank,
-merchant, or counterparty can read that credential straight from the ledger — no API key, no
-phone-home — and, crucially, **enforce it at consensus**: an uncertified agent's payment is
-rejected by the validators themselves with `tecNO_PERMISSION`, before any application code runs.
+verdict as a **six-dimension trust passport — a tamper-evident credential that lives on the XRP
+Ledger** (XLS-70). Any bank, merchant, or counterparty reads that credential straight from the
+ledger — no API key, no phone-home — and crucially, **enforces it at consensus**: an uncertified
+agent's payment is rejected by validators with `tecNO_PERMISSION`, before any application code
+runs.
 
-> **The product is the credential.** Cross-border agent payments are use case #1 — the first
-> place where "is this agent allowed to move this money?" has to be answered by the rails, not
-> by a dashboard.
+> **The product is the credential.** Cross-border agent payments are the first place where
+> "is this agent allowed to move this money?" must be answered by the rails, not by a dashboard.
 
-> 🏆 Built for **SwissHacks 2026 · Ripple challenge — Know Your Agent (KYA)**. Runs on XRPL
+> Built for **SwissHacks 2026 · Ripple challenge — Know Your Agent (KYA)**. Runs on XRPL
 > **testnet** with real transactions; every primitive used is live or one amendment-flag away
 > from mainnet.
 
 ---
 
-## 📺 Demo video
+## The multi-dimensional agent passport
 
-> _Walkthrough video coming soon — link will be added here._
+A v2 MeshCredit passport is not a single number — it is a **six-dimension evidence bundle**,
+each dimension attested by a named external issuer and hashed on-ledger:
 
-A fully narrated, end-to-end run prints a live explorer link for **every** on-chain action:
+| Dim | Name | Issuer | What it checks |
+|-----|------|--------|----------------|
+| D1 | DID Identity | Public XRPL | did:xrpl anchor, account age |
+| D2 | Human Accountability | World ID | Nullifier proof — one person behind the agent |
+| D3 | Code Integrity | Self-attested | SHA-256 of harness + skill bytecodes |
+| D4 | Behavioral History | Public XRPL | On-chain TX count, latency, error rate |
+| D5 | Mandate | KYB operator credential | Delegated spend cap from the verified business |
+| D6 | AML Screening | OFAC SDN / Zefix | Sanctions match check against named counterparties |
 
-```bash
-npm run demo
-```
+Each dimension carries a **PASS / PENDING / DENY** status pill and a short evidence reference. The
+six scores fuse into a 100-pt total that maps to a **tier (BRONZE → PLATINUM)** and a **confidence
+percentage** — the data flywheel: more on-chain history → higher confidence → better terms.
+
+### Data flywheel
+
+A fresh agent starts BRONZE with low confidence and a tight ceiling. Every successful payment
+adds on-chain history (D4), pushing confidence up and ceiling higher — no manual re-KYC needed.
+The demo shows this contrast live: Aria (fresh) vs a thick-file agent with a richer score.
+
+### Honest framing
+
+The demo uses an **IDKit simulator** for World ID (no live World App scan required) and a **cached
+Zefix fixture** for the Swiss business registry. Both are clearly labelled in the UI. The
+settlement, credential issuance, and gate enforcement use **real XRPL testnet transactions**.
 
 ---
 
 ## Why this is different
 
-Everyone agrees agents need identity and reputation. The question is **where it is enforced.**
-
-| | Typical agent-trust stack | **MeshCredit** |
+| | Typical agent-trust stack | MeshCredit |
 |---|---|---|
 | Where trust lives | a row in a vendor's database | an **XLS-70 credential on the ledger** |
 | How it's checked | an API call the relying party must trust | read directly from the ledger, no API key |
 | Where it's **enforced** | application layer (a layer *above* the money) | **at consensus** — validators reject the tx |
-| Kill-switch | revoke in a DB, hope every integrator honors it | `CredentialDelete` — denied everywhere in one ~4 s close |
+| Kill-switch | revoke in a DB, hope every integrator honors it | `CredentialDelete` — denied everywhere in ~4 s |
 | Identity of the *business* | usually ignored | **KYB** operator credential + delegated spend cap |
+| Trust dimension | single score | **six-dimension bundle**, each backed by a named issuer |
 
 Competing approaches (t54, Experian's agent work, ERC-8004) enforce one layer up, in software a
-counterparty has to trust. MeshCredit pushes enforcement **into the ledger**: the credential and
-the gate are the same primitive, so the rule cannot be skipped by a buggy or malicious integrator.
+counterparty has to trust. MeshCredit pushes enforcement **into the ledger**.
 
 ---
 
-## Clear demonstration of on-chain transactions
+## The demo arc
 
-`npm run demo` executes the full cross-border arc on XRPL testnet. The scenario:
+> **Novartis AG** (KYB-verified, Basel) runs **Aria**, a procurement AI, which pays **Lagos
+> Precision Parts Ltd** (Lagos) through a bank that gates its settlement account on a MeshCredit
+> credential. The bank also denies an uncertified agent — *at the ledger*, not in software.
 
-> **Helvetia Components AG** (a KYB-verified operator in Zürich 🇨🇭) runs an AI procurement
-> **agent, "Aria,"** which must pay **Lagos Precision Parts Ltd** (Lagos 🇳🇬) through a **bank
-> that gates its settlement account on a MeshCredit credential.** A trustworthy agent is
-> fast-tracked; an uncertified one is declined *by the ledger* before the bank ever sees it.
+The web theater at `http://localhost:5173/#/live` streams every step live, including:
 
-Every step below is a **real transaction** — no mocks in the settlement path:
+- **KYB** — Novartis verified, delegated spend cap issued on-ledger
+- **Passport issued** — 6-dimension KYA check, tier + confidence, the full passport hero rendered
+- **Agent reasons** — live DeepSeek chain-of-thought gating the payment decision
+- **Fan-out settlements** — payments to Lagos and Taipei suppliers, real escrow/release
+- **Three denials** (clearly labeled with reason): tier ceiling too low; daily budget exhausted; AML block (OFAC SDN match)
+- **Uncertified contrast** — `tecNO_PERMISSION` from ledger validators, not the bank's software
+- **Surgical kill-switch** — `CredentialDelete` → denied everywhere in one ledger close
+- **Data-flywheel contrast** — fresh BRONZE agent vs thick-file GOLD: the compounding effect made visible
 
-| # | On-chain action | XRPL transaction | What it proves |
-|---|---|---|---|
-| 1 | KYB the operator | `CredentialCreate` (`operator_v1`) | the *business* is verified, with a delegated spend cap |
-| 2 | Bank stands up its gate | `AccountSet(asfDepositAuth)` + `DepositPreauth(AuthorizeCredentials)` | the relying party requires a MeshCredit credential |
-| 3 | KYA the agent | `CredentialCreate` (`agent_trust_v1`) | score → tier → on-ledger limit + content attestation |
-| 4 | Convert currency | DEX cross-currency **path payment** | FX with zero bureau involvement |
-| 5 | Funds held at the bank | `EscrowCreate` | money is committed, visible, not yet released |
-| 6 | Gate check | `ledger_entry` credential read | credential + amount verified against tier |
-| 7 | Release to beneficiary | `EscrowFinish` + `Payment` | certified agent settles to Lagos |
-| 8 | Code-swap caught | content-hash re-check | a tampered skill no longer matches the on-ledger `sh` |
-| 9 | **Uncertified agent tries the same** | `EscrowFinish` → **`tecNO_PERMISSION`** | **declined by the ledger**, before the bank's queue |
-| 10 | Skill credential | `CredentialCreate` (`agent_skill_v1`) | the same rail attests specialized skills |
-| 11 | Kill-switch | `CredentialDelete` | one delete → denied at every gated venue at once |
+---
 
-A second script proves the gate against **real testnet RLUSD** on the payment leg:
+## Run instructions
 
 ```bash
-npm run smoke:rlusd-gate    # certified Payment → tesSUCCESS; uncertified → tecNO_PERMISSION
+# Install
+npm install
+cd web && npm install && cd ..
+
+# Start the backend (treasury API on :8787)
+npm run server
+
+# Start the web console (port 5173)
+npm --prefix web run dev
 ```
 
-### Verified on XRPL testnet
+Open **http://localhost:5173/#/live** and click **Run the live cross-border demo**.
+
+`./start.sh` launches both together (Ctrl+C stops both).
+
+---
+
+## XRPL features used
+
+| Feature / amendment | How MeshCredit uses it |
+|---|---|
+| **XLS-70 Credentials** | `CredentialCreate` / `CredentialAccept` / `CredentialDelete`. Three types: KYA (`agent_trust_v1`), KYB (`operator_v1`), skill (`agent_skill_v1`). |
+| **DepositAuth** (`asfDepositAuth`) | Bank locks its settlement account; only credential-holders pay in. |
+| **DepositPreauth** with `AuthorizeCredentials` | Pre-authorizes *anyone with a MeshCredit credential*. The `CredentialIDs` field is what validators check. |
+| **XLS-80 Permissioned Domains** | Groups acceptable credentials so a venue can say "members only" by credential, not by allow-list. |
+| **XLS-85 Token Escrow** | `EscrowCreate` / `EscrowFinish` hold settlement at the bank. Releasing requires the credential. |
+| **DEX cross-currency path payments** | FX routed through the order book — zero bureau involvement. |
+| **did:xrpl** | Agent credential anchored to its DID; reputation survives re-registration. |
+| **`asfAllowTrustLineLocking`** | The single mainnet flag that makes the escrow leg native-RLUSD end-to-end. Ripple's RLUSD issuer hasn't set it yet; demo escrow uses a stand-in IOU while the **payment** leg uses real RLUSD. |
+
+---
+
+## Verified on XRPL testnet
 
 <!-- VERIFIED_TX:START -->
 A captured run — agent scored **56 → TIER-2 → $100 ceiling**, on-ledger credId
@@ -105,139 +146,18 @@ A captured run — agent scored **56 → TIER-2 → $100 ceiling**, on-ledger cr
 
 ---
 
-## XRPL features and amendments used
-
-| Feature / amendment | How MeshCredit uses it |
-|---|---|
-| **XLS-70 Credentials** | The core product. `CredentialCreate` / `CredentialAccept` / `CredentialDelete`, read via `ledger_entry`. Three credential types: KYA (`agent_trust_v1`), KYB (`operator_v1`), skill (`agent_skill_v1`). |
-| **DepositAuth** (`asfDepositAuth`) | The bank locks its settlement account so only authorized senders can pay in — the basis of consensus-level enforcement. |
-| **DepositPreauth** with `AuthorizeCredentials` | Pre-authorizes *anyone holding a MeshCredit credential* instead of named accounts. The `CredentialIDs` field on the spending tx is what the validators check. |
-| **XLS-80 Permissioned Domains** | Groups acceptable credentials into a domain so a venue can say "members only" by credential, not by allow-list. |
-| **XLS-85 Token Escrow** | `EscrowCreate` / `EscrowFinish` hold the settlement "at the bank." Releasing requires the credential — the gate and the escrow are one mechanism. Supports `PREIMAGE-SHA-256` crypto-conditions. |
-| **DEX cross-currency path payments** | The agent's source currency is auto-routed to the destination currency through the order book — the FX leg of the cross-border payment. |
-| **did:xrpl** | The agent's credential is anchored to its decentralized identifier, so reputation survives re-registration. |
-| **`asfAllowTrustLineLocking`** | The single mainnet flag that makes the escrow leg native-RLUSD end-to-end. Ripple's RLUSD issuer doesn't set it *yet*, so the demo's escrow leg uses a stand-in USD IOU while the **payment** leg uses real RLUSD (see Settlement). |
-
----
-
-## Demonstration of AI agent interaction with XRPL
-
-The agent is a **first-class XRPL account that signs its own transactions.** MeshCredit gives it a
-few-line SDK so an agent can earn, carry, and use an on-ledger trust credential:
-
-```ts
-import { MeshCredit } from 'meshcredit';
-
-const mc = new MeshCredit();                          // points at the treasury endpoint
-await mc.register();                                  // KYA → on-ledger agent_trust_v1 credential
-const { payment } = await mc.payment.initiate(payee, '50');  // funds held at the bank's gate (EscrowCreate)
-await mc.payment.approve(payment.id);                 // released only if the credential is valid (EscrowFinish)
-
-const cred = await mc.credential();                   // read the agent's on-ledger credential — no API key
-await mc.skill.certify('invoice-reconciliation');     // attest a specialized skill (a 2nd credential)
-```
-
-What "the agent interacting with XRPL" concretely means here:
-
-- **It holds its own key** and signs `EscrowCreate` / `EscrowFinish` / `Payment` itself — the
-  treasury never moves money on its behalf, it only *issues the credential*.
-- **It reads the ledger** to prove its own standing (`ledger_entry`) and to check counterparties.
-- **It is governed by the ledger**: the same agent, once its credential is revoked, is rejected at
-  consensus on its very next attempt — the autonomy and the leash are both on-chain.
-
-> **Real agent reasoning:** the demo agent makes its decisions through a live LLM
-> (DeepSeek, OpenAI-SDK compatible) rather than hard-coded branches — wired via `src/config.ts`
-> and a gitignored `.env`. See `.env.example`.
-
----
-
-## Quickstart
-
-```bash
-# 1. install
-npm install
-
-# 2. unit tests — pure logic: codec, KYA/KYB scorecards, dossier, attestation (113 tests)
-npm test
-
-# 3. the narrated end-to-end demo on XRPL testnet (self-funds wallets, prints explorer links)
-npm run demo
-
-# 4. live testnet integration tests
-npm run test:testnet
-
-# 5. run the product (two terminals, or use ./start.sh)
-npm run server                 # treasury API on :8787 (funds wallets on boot)
-npm --prefix web run dev       # product console on :5173  → http://localhost:5173
-
-# 6. prove the gate against real testnet RLUSD
-npm run smoke:rlusd-gate
-
-# (optional) settle in an RLUSD stand-in IOU instead of XRP
-npm run setup:stablecoin       # provisions the issuer + flags; prints the .env lines to add
-```
-
-`./start.sh` launches the treasury API and the web console together (Ctrl+C stops both).
-
-Then open **http://localhost:5173/#/live** — the **Live Demo Theater** runs the whole
-cross-border arc on testnet and visualizes every agent step, the agent's **real LLM reasoning**
-(DeepSeek), and the trust passport as they happen.
-
----
-
-## How a credential is decided
-
-KYA produces a transparent **100-point score** that fuses off-chain signals (World ID, runtime
-stability, transcript coherence, source provenance, human-completion, operator backing) with
-**on-chain XRPL history** (account age from the first ledger transaction, activity). The score maps
-to a tier, and the tier sets the agent's on-ledger transaction ceiling:
-
-| Score | Tier | Max tx amount |
-|---|---|---|
-| ≥ 85 | TIER-4 | $2000 |
-| ≥ 70 | TIER-3 | $500 |
-| ≥ 50 | TIER-2 | $100 |
-| ≥ 30 | TIER-1 | $25 |
-| < 30 | DENIED | — |
-
-**Content attestation (honest L3).** The credential records 8-char prefixes of the SHA-256 hashes
-of the agent's *harness* (`ih`) and *skill* (`sh`) bytes. A relying party recomputes and compares:
-a swapped or tampered runtime no longer matches and is flagged. This is **version-pinning and
-accountability — not a trusted execution environment**; it proves *which code* was certified, not
-that the code ran untampered.
-
-**Content-addressed dossier.** Every decision is backed by an off-chain dossier whose `ref` is a
-recursive canonical hash binding *all* of its contents. The credential carries the `ref`; the full
-dossier is served at `GET /api/dossier/:ref`. Change one signal, get a different `ref`.
-
----
-
-## Settlement
-
-The credential is **asset-agnostic**. The demo runs two paths:
-
-- **XRP (default, zero setup).** The escrow leg settles in XRP — simplest to reproduce.
-- **Real RLUSD on the gated payment leg (Option B).** `npm run smoke:rlusd-gate` issues the
-  credential-gated `Payment` in **real testnet RLUSD**: a certified agent gets `tesSUCCESS`, an
-  uncertified one gets `tecNO_PERMISSION`. The escrow leg uses a stand-in USD IOU only because
-  Ripple's testnet RLUSD issuer hasn't set `asfAllowTrustLineLocking` yet — the **one flag** that
-  closes the gap to a fully native-RLUSD path on mainnet.
-
----
-
 ## Architecture
 
 ```
 src/
-  xrpl/        codec · client · wallets · credential (XLS-70) · operator (KYB) · skillCredential
-               domain (DepositAuth/Preauth/Permissioned Domain) · bankGate · escrow (XLS-85)
-               dex (path payments) · payments · stablecoin
-  kya/         scorecard (100-pt) · signals (on-chain) · kyb · underwrite · dossier (content-addressed)
-  agent/       sdk (mc.*) · demoUC1 (narrated end-to-end) · attest (content hashing) · skills/
-  treasury/    server (HTTP API + SSE) · agentStore · paymentStore
-web/           React + Vite product console (live bureau lookup + event stream)
-tests/         unit + opt-in live-testnet suites
-smoke-rlusd-gate.ts   Option-B: the gate against real testnet RLUSD
+  xrpl/    codec · client · wallets · credential (XLS-70) · operator (KYB) · skillCredential
+           domain (DepositAuth/Preauth/Permissioned Domain) · bankGate · escrow (XLS-85)
+           dex (path payments) · payments · stablecoin
+  kya/     scorecard (100-pt, 6-dim) · signals (on-chain) · kyb · underwrite · dossier
+  agent/   sdk (mc.*) · demoUC1 (narrated end-to-end) · attest (content hashing) · skills/
+  treasury/ server (HTTP API + SSE) · agentStore · paymentStore
+web/       React + Vite live demo theater (passport v2, flywheel contrast, SSE timeline)
+tests/     unit + opt-in live-testnet suites
 ```
 
 **Tech stack:** TypeScript (ESM) · xrpl.js v5 · Node 20 · Express · React + Vite · Vitest.

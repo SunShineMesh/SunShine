@@ -113,6 +113,10 @@ export default function Live() {
     }
     return undefined;
   }, [stepsArr]);
+  // Flywheel contrast: fresh agent (kya_fresh) vs thick-file agent (kya_thick).
+  const kyaFresh = steps.get('kya_fresh');
+  const kyaThick = steps.get('kya_thick');
+
   const start = async () => { setErr(null); const r = await runDemo(); if (r?.error) { setErr(r.error); setRunning(false); } };
 
   return (
@@ -152,6 +156,14 @@ export default function Live() {
           </div>
         ))}
       </div></div>
+
+      {/* Flywheel contrast — fresh BRONZE vs thick-file GOLD: the data-flywheel story */}
+      {(kyaFresh ?? kyaThick) && (
+        <div className="wrap">
+          <div className="live-section-lbl">Data flywheel — trust compounds with history</div>
+          <FlywheelContrast fresh={kyaFresh} thick={kyaThick} />
+        </div>
+      )}
 
       {summary && (
         <div className="wrap"><div className={'verdict ' + (summary.ok ? 'pass' : 'fail')}>
@@ -211,6 +223,36 @@ export default function Live() {
   );
 }
 
+// ── flywheel contrast: a fresh BRONZE vs thick-file GOLD agent ──
+function FlywheelContrast({ fresh, thick }: { fresh?: DemoStep; thick?: DemoStep }) {
+  const fd = fresh?.data as any;
+  const td = thick?.data as any;
+  const freshTier = fd?.tier_v3 ?? fd?.tier ?? 'BRONZE';
+  const thickTier = td?.tier_v3 ?? td?.tier ?? 'GOLD';
+  const freshConf = fd?.confidence !== undefined ? `${fd.confidence}%` : '—';
+  const thickConf = td?.confidence !== undefined ? `${td.confidence}%` : '—';
+  const freshCeil = fd?.maxTxAmount ? `$${fd.maxTxAmount}` : '—';
+  const thickCeil = td?.maxTxAmount ? `$${td.maxTxAmount}` : '—';
+  return (
+    <>
+      <div className="flywheel-banner">
+        <div className="fb-side">
+          <div className="fb-tier" style={{ color: 'var(--signal)' }}>{freshTier}</div>
+          <div className="fb-meta">fresh agent · {freshConf} confidence · ceil {freshCeil}</div>
+          <div className="fb-meta" style={{ color: 'var(--faint)', marginTop: 2 }}>thin file — limited history</div>
+        </div>
+        <div className="fb-sep">→</div>
+        <div className="fb-side" style={{ textAlign: 'right' }}>
+          <div className="fb-tier" style={{ color: 'var(--mesh-2)' }}>{thickTier}</div>
+          <div className="fb-meta">thick-file agent · {thickConf} confidence · ceil {thickCeil}</div>
+          <div className="fb-meta" style={{ color: 'var(--credit)', marginTop: 2 }}>rich history — higher trust, higher limit</div>
+        </div>
+      </div>
+      <div className="flywheel-caption">More payments → richer on-chain history → higher score → better terms. The flywheel is self-reinforcing.</div>
+    </>
+  );
+}
+
 // ── the agent mind panel — the real LLM reasoning, surfaced ──
 function MindPanel({ reason, running, brain }: { reason?: DemoStep; running: boolean; brain: string }) {
   const data = reason?.data as any;
@@ -242,10 +284,15 @@ function MindPanel({ reason, running, brain }: { reason?: DemoStep; running: boo
 }
 
 // ── a single step card in the timeline ──
+// kya_thick gets a special contrast class to contrast the data-flywheel
+const CONTRAST_IDS = new Set(['kya_thick']);
+
 function StepCard({ s }: { s: DemoStep }) {
   const icon = s.status === 'active' ? <span className="sc-spin" /> : s.status === 'denied' ? '✕' : s.status === 'info' ? '◌' : '✓';
+  const extraClass = CONTRAST_IDS.has(s.id) ? ' contrast-kya' : '';
+  const isDenied = s.status === 'denied';
   return (
-    <div className={'step-card ' + s.status}>
+    <div className={'step-card ' + s.status + extraClass}>
       <div className="sc-rail"><span className="sc-icon">{icon}</span></div>
       <div className="sc-body">
         <div className="sc-top">
@@ -254,6 +301,8 @@ function StepCard({ s }: { s: DemoStep }) {
         </div>
         <div className="sc-title">{s.title}</div>
         {s.body && <div className="sc-text">{s.body}</div>}
+        {/* Denial explanation banner — makes the three denial arcs legible for judges */}
+        {isDenied && <DenialBanner stepId={s.id} data={s.data as any} />}
         <StepData s={s} />
         {s.tx && (
           <a className="sc-tx" href={s.tx.url} target="_blank" rel="noreferrer">
@@ -261,6 +310,26 @@ function StepCard({ s }: { s: DemoStep }) {
           </a>
         )}
       </div>
+    </div>
+  );
+}
+
+// Denial-specific explanation banners
+const DENIAL_REASONS: Record<string, (d: any) => string> = {
+  denial_tier:   (d) => `Tier ceiling $${d?.ceiling ?? d?.maxTxAmount ?? '?'} < requested $${d?.requested ?? d?.amount ?? '?'} — agent must earn a higher tier`,
+  denial_budget: (d) => `Daily budget exhausted — $${d?.remaining ?? '?'} remaining, $${d?.requested ?? d?.amount ?? '?'} requested`,
+  denial_aml:    (d) => `AML block — D6 matched sanctioned entity "${d?.matchedName ?? d?.amlTarget ?? '?'}" on OFAC SDN`,
+  contrast:      ()  => 'Uncertified agent — ledger rejects with tecNO_PERMISSION before bank even sees it',
+};
+
+function DenialBanner({ stepId, data }: { stepId: string; data: any }) {
+  const fn = DENIAL_REASONS[stepId];
+  if (!fn) return null;
+  const reason = fn(data);
+  return (
+    <div className="denied-banner" role="alert">
+      <span className="db-icon">⊘</span>
+      <span className="db-reason"><span className="db-label">DENIED</span> — {reason}</span>
     </div>
   );
 }
@@ -304,6 +373,9 @@ function StepData({ s }: { s: DemoStep }) {
             <Chip k="tier" v={tier} accent />
             {conf && <Chip k="confidence" v={conf} />}
             <Chip k="ceiling" v={`$${d.maxTxAmount}`} />
+            {/* Honest labels: these data sources are simulated/cached in the demo */}
+            <span className="honest-tag" title="World ID proof uses IDKit simulator in demo">World ID = simulator</span>
+            <span className="honest-tag" title="Zefix business registry uses cached fixture in demo">Zefix = cached</span>
           </div>
           {d.dimensions && <DimChips dims={d.dimensions} />}
         </>

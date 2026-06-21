@@ -46,37 +46,52 @@ const DIM_STATUS_COLOR: Record<DimensionStatus, string> = {
 };
 
 const DIM_LABEL: Record<string, string> = {
-  D1: 'Identity',
-  D2: 'Human',
-  D3: 'Code',
-  D4: 'Behavior',
+  D1: 'DID Identity',
+  D2: 'Human Accountability',
+  D3: 'Code Integrity',
+  D4: 'Behavioral History',
   D5: 'Mandate',
-  D6: 'AML',
+  D6: 'AML Screening',
 };
 
-/** Render the six-dimension evidence panel. */
+// Short evidence hint shown below the row for legibility
+const DIM_HINT: Record<string, string> = {
+  D1: 'XLS-40 DID anchored on XRPL',
+  D2: 'World ID nullifier · simulator',
+  D3: 'SHA-256 harness + skill hash pair',
+  D4: 'On-chain TX history · public XRPL',
+  D5: 'Operator CredentialCreate · KYB-issued',
+  D6: 'OFAC SDN snapshot · Zefix cached',
+};
+
+/** Render the six-dimension evidence panel — the passport hero. */
 function DimensionPanel({ dims }: { dims: DimensionRecord[] }) {
   return (
     <div className="pp-dims">
-      <div className="pp-dims-h">Six dimensions — each backed by a named issuer</div>
-      {dims.map((dim) => (
-        <div className="pp-dim-row" key={dim.id}>
-          <span className="pp-dim-id">{dim.id}</span>
-          <span className="pp-dim-label">{DIM_LABEL[dim.id] ?? dim.id}</span>
-          <span
-            className="pp-dim-status"
-            style={{ color: DIM_STATUS_COLOR[dim.status] ?? 'var(--faint)' }}
-          >
-            {dim.status}
-          </span>
-          <span className="pp-dim-issuer">{dim.issuer}</span>
-          {dim.evidenceRef && (
-            <span className="pp-dim-ref mono" title={dim.evidenceRef}>
-              {short(dim.evidenceRef, 8)}
-            </span>
-          )}
-        </div>
-      ))}
+      <div className="pp-dims-h">6-dimension trust attestation — each backed by a named issuer</div>
+      {dims.map((dim) => {
+        const statusColor = DIM_STATUS_COLOR[dim.status] ?? 'var(--faint)';
+        const hint = DIM_HINT[dim.id];
+        return (
+          <div key={dim.id}>
+            <div className="pp-dim-row">
+              <span className="pp-dim-id">{dim.id}</span>
+              <span className="pp-dim-label">{DIM_LABEL[dim.id] ?? dim.id}</span>
+              {/* status pill */}
+              <span className="pp-dim-status" style={{ color: statusColor, borderColor: statusColor }}>
+                {dim.status}
+              </span>
+              <span className="pp-dim-issuer">{dim.issuer}</span>
+              {dim.evidenceRef && (
+                <span className="pp-dim-ref" title={dim.evidenceRef}>
+                  {short(dim.evidenceRef, 8)}
+                </span>
+              )}
+            </div>
+            {hint && <div className="pp-dim-hint">{hint}</div>}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -116,10 +131,10 @@ export function Passport({ d, pending }: { d: PassportData; pending?: boolean })
         <div>
           <div className="pp-chip">XLS-70 · agent_trust_v1</div>
           <div className="pp-tier" style={{ color }}>{tier}</div>
-          {/* Confidence percentage — shown for v2 passports that carry it */}
+          {/* Confidence percentage — flywheel signal: more tx history = higher confidence */}
           {d.confidence !== undefined && (
-            <div className="pp-confidence" style={{ color, opacity: 0.8, fontSize: 13, marginTop: 2 }}>
-              {tier} · {d.confidence}% confidence
+            <div className="pp-confidence" style={{ color }}>
+              {d.confidence}% confidence · data flywheel
             </div>
           )}
         </div>
