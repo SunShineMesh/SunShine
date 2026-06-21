@@ -33,6 +33,7 @@ import { DossierStore } from '../kya/dossier.js';
 import { attestFiles } from '../agent/attest.js';
 import { runCrossBorderScenario } from '../agent/scenario.js';
 import { readFileSync } from 'node:fs';
+import { rpSignatureHandler, verifyProofHandler } from '../worldid/backend.js';
 
 const PAYMENTS_PATH = fileURLToPath(new URL('../../.payments.json', import.meta.url));
 const AGENTS_PATH = fileURLToPath(new URL('../../.agents.json', import.meta.url));
@@ -294,6 +295,12 @@ async function main() {
       res.json({ dossier: d });
     } catch (e: any) { res.status(500).json({ error: e.message }); }
   });
+
+  // ── World ID IDKit v4 backend routes (D2 Human Accountability) ───────────
+  // POST /api/worldid/rp-signature — calls signRequest; honest fallback when key absent.
+  app.post('/api/worldid/rp-signature', rpSignatureHandler);
+  // POST /api/worldid/verify — forwards to developer.world.org/api/v4/verify/{rp_id}.
+  app.post('/api/worldid/verify', verifyProofHandler);
 
   // ── Cinematic cross-border scenario — streamed step-by-step over SSE ───
   // Kicks off the full real-testnet arc (KYB → KYA → gate → real LLM risk

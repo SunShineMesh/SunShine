@@ -15,6 +15,7 @@
     "setup:stablecoin": "tsx src/xrpl/setupStablecoin.ts"
   },
   "dependencies": {
+    "@worldcoin/idkit-core": "^4.1.8",
     "cors": "^2.8.5",
     "express": "^4.21.2",
     "xrpl": "^5.0.0"
