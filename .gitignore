@@ -27,3 +27,5 @@ setup-demo-wallet.ts
 #   curl -L -o data/sanctions_snapshot_20260621.csv \
 #     "https://data.opensanctions.org/datasets/latest/us_ofac_sdn/targets.simple.csv"
 data/*.csv
+# Runtime-generated World ID nullifier store (replay prevention log)
+data/worldid-nullifiers.json

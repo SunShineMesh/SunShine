@@ -15,7 +15,7 @@
 //   WORLDID_APP_ID          — app_xxx (safe to expose)
 //   WORLDID_ACTION          — defaults to 'meshcredit-agent-verify'
 
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import type { Request, Response } from 'express';
 import type { DimensionRecord } from '../kya/dimension.js';
@@ -156,6 +156,18 @@ export class NullifierStore {
   }
 }
 
+// ─── Module-level NullifierStore (replay prevention) ─────────────────────────
+//
+// Exported so tests and ops tooling can inspect or pre-seed the store.
+// In production the file lives at data/worldid-nullifiers.json (same dir as
+// other JSON stores).  In test/CI environments the WORLDID_NULLIFIER_STORE
+// env var can be set to ':memory:' to keep the store in-process only.
+
+const nullifierStorePath =
+  process.env.WORLDID_NULLIFIER_STORE ?? 'data/worldid-nullifiers.json';
+
+export const nullifierStore = new NullifierStore(nullifierStorePath);
+
 // ─── ENV helpers ─────────────────────────────────────────────────────────────
 
 function getSigningKey(): string {
@@ -242,6 +254,20 @@ export async function verifyProofHandler(req: Request, res: Response): Promise<v
     const nullifier = extractNullifier(upstreamData) || extractNullifier(body);
     const action = getAction();
     const verifiedAt = Date.now();
+
+    // ── Replay prevention ──────────────────────────────────────────────────
+    // Persist the nullifier before returning success.  If the nullifier has
+    // already been seen (replay attack), NullifierStore.add() throws — we
+    // catch it here and respond 409.
+    if (nullifier) {
+      try {
+        nullifierStore.add(nullifier, { action, storedAt: verifiedAt });
+      } catch (replayErr: unknown) {
+        const errMsg = replayErr instanceof Error ? replayErr.message : String(replayErr);
+        res.status(409).json({ error: `Nullifier replay detected: ${nullifier}`, message: errMsg });
+        return;
+      }
+    }
 
     // Derive verification level: check responses array for credential type clues
     let verificationLevel: 'orb' | 'device' | 'unknown' = 'unknown';
