@@ -21,12 +21,11 @@ smoke-pivot.ts
 smoke-tierb.ts
 smoke.mjs
 setup-demo-wallet.ts
-# Large AML CSV snapshots (multi-MB) — gitignored to keep the repo push-friendly.
-# Only the small JSON fixture (data/sanctions_fixture.json) is committed.
-# To reproduce the full-CSV code path locally, download once:
+# AML sanctions snapshot — data/sanctions_snapshot_20260621.csv (~7MB, OFAC SDN, public-domain
+# source) and the small data/sanctions_fixture.json are BOTH committed, so the repo is
+# clone-and-run with real screening. See data/SOURCE.md. Refresh the snapshot with:
 #   curl -L -o data/sanctions_snapshot_20260621.csv \
 #     "https://data.opensanctions.org/datasets/latest/us_ofac_sdn/targets.simple.csv"
-data/*.csv
 # Runtime-generated World ID nullifier store (replay prevention log)
 data/worldid-nullifiers.json
 # Thick-file agent wallet (pre-seeded by scripts/seed-thick-agent.ts)
