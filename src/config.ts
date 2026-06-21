@@ -41,8 +41,65 @@ export const CONFIG = {
     model: process.env.DEEPSEEK_MODEL ?? 'deepseek-v4-pro',
     flashModel: process.env.DEEPSEEK_FLASH_MODEL ?? 'deepseek-v4-flash',
   },
+  // World ID IDKit v4 — backend-only signing key must NEVER be sent to the frontend.
+  // Read either WORLDID_RP_SIGNING_KEY or legacy WORLDID_KEY (same value).
+  worldId: {
+    rpSigningKey: process.env.WORLDID_RP_SIGNING_KEY ?? process.env.WORLDID_KEY ?? '',
+    rpId: process.env.WORLDID_RP_ID ?? '',
+    appId: process.env.WORLDID_APP_ID ?? '',
+    action: process.env.WORLDID_ACTION ?? 'meshcredit-agent-verify',
+  },
+  // Zefix KYB REST API (https://www.zefix.admin.ch/ZefixPublicREST/api/v1).
+  // Falls back to fixture when credentials are absent or ZEFIX_FIXTURE=true.
+  zefix: {
+    username: process.env.ZEFIX_USERNAME ?? '',
+    password: process.env.ZEFIX_PASSWORD ?? '',
+    useFixture: process.env.ZEFIX_FIXTURE === 'true',
+  },
+  // AML sanctions screening — OpenSanctions OFAC SDN snapshot.
+  // Uses the small JSON fixture when SANCTIONS_FIXTURE=true or the full CSV is absent.
+  aml: {
+    snapshotPath: process.env.SANCTIONS_SNAPSHOT_PATH ?? 'data/sanctions_snapshot_20260621.csv',
+    useFixture: process.env.SANCTIONS_FIXTURE === 'true',
+  },
+  // Thick-file demo agent — pre-seeded by scripts/seed-thick-agent.ts.
+  // Address stored in .thick-agent.json (gitignored) and optionally overridden by env.
+  thickAgent: {
+    address: process.env.THICK_AGENT_ADDR ?? '',
+  },
 };
 
 export function assetLabel(a: Asset = CONFIG.asset): string {
   return a.kind === 'XRP' ? 'XRP' : `${a.currency} (RLUSD stand-in)`;
+}
+
+// ── Integration status ────────────────────────────────────────────────────────
+// Returns a summary object showing which integrations are live (real credentials
+// set) vs fallback. Called at server startup to print a clear log.
+export interface IntegrationStatus {
+  worldId: { live: boolean; rpId: string };
+  zefix: { live: boolean; useFixture: boolean };
+  aml: { live: boolean; snapshotPath: string };
+  deepseek: { live: boolean };
+}
+
+export function integrationStatus(): IntegrationStatus {
+  return {
+    worldId: {
+      live: CONFIG.worldId.rpSigningKey !== '' && CONFIG.worldId.rpId !== '',
+      rpId: CONFIG.worldId.rpId || '(not set)',
+    },
+    zefix: {
+      live: CONFIG.zefix.username !== '' && CONFIG.zefix.password !== '' && !CONFIG.zefix.useFixture,
+      useFixture: CONFIG.zefix.useFixture || CONFIG.zefix.username === '',
+    },
+    aml: {
+      // "live" means: fixture mode is explicitly off AND the full snapshot file exists.
+      live: !CONFIG.aml.useFixture && existsSync(CONFIG.aml.snapshotPath),
+      snapshotPath: CONFIG.aml.snapshotPath,
+    },
+    deepseek: {
+      live: CONFIG.deepseek.apiKey !== '',
+    },
+  };
 }

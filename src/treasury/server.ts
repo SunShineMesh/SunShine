@@ -15,7 +15,7 @@ import { underwrite } from '../kya/underwrite.js';
 import { issueCredential, acceptCredential, fetchCredential, revokeCredential } from '../xrpl/credential.js';
 import { toRippleEpoch, dossierRef } from '../xrpl/codec.js';
 import { PaymentStore } from './paymentStore.js';
-import { CONFIG, assetLabel } from '../config.js';
+import { CONFIG, assetLabel, integrationStatus } from '../config.js';
 import type { Signals, Tier } from '../kya/scorecard.js';
 import { kybScore } from '../kya/kyb.js';
 import type { KybSignals } from '../kya/kyb.js';
@@ -397,6 +397,15 @@ async function main() {
     console.log(`  network=${CONFIG.network}  asset=${assetLabel()}`);
     console.log(`  treasury(bureau)=${treasury.address}`);
     console.log(`  bank(gate)=${bank.address}`);
+
+    // Print which integrations are live vs fallback so operators can diagnose
+    // misconfigured credentials before running the demo.
+    const status = integrationStatus();
+    console.log('  integrations:');
+    console.log(`    deepseek  : ${status.deepseek.live ? 'LIVE (real reasoning)' : 'FALLBACK (no DEEPSEEK_API_KEY)'}`);
+    console.log(`    worldId   : ${status.worldId.live ? `LIVE (rp=${status.worldId.rpId})` : 'FALLBACK (wiring shown, proof pending)'}`);
+    console.log(`    zefix     : ${status.zefix.live ? 'LIVE (real API)' : `FALLBACK (fixture${status.zefix.useFixture ? '' : ' — set ZEFIX_USERNAME/PASSWORD to go live'})`}`);
+    console.log(`    aml       : ${status.aml.live ? `LIVE (${status.aml.snapshotPath})` : `FALLBACK (fixture — set SANCTIONS_FIXTURE=false to use full snapshot)`}`);
   });
 }
 
