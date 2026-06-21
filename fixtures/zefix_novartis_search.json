@@ -1,0 +1,26 @@
+[
+  {
+    "name": "Novartis AG",
+    "uid": "CHE-103.867.266",
+    "status": "ACTIVE",
+    "canton": "BS",
+    "legalForm": {
+      "uid": "0107.003.036",
+      "name": {
+        "de": "Aktiengesellschaft",
+        "fr": "Société anonyme",
+        "it": "Società anonima",
+        "en": "Corporation"
+      }
+    },
+    "address": {
+      "street": "Lichtstrasse",
+      "houseNumber": "35",
+      "swissZipCode": "4056",
+      "city": "Basel",
+      "canton": "BS"
+    },
+    "sogcDate": "1996-12-21",
+    "_dataSource": "Zefix public registry (cached)"
+  }
+]
