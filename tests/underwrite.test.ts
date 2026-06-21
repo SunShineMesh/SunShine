@@ -86,4 +86,47 @@ describe('underwrite', () => {
     expect(() => encodeTrustURI(r.terms)).not.toThrow();
     expect(encodeTrustURI(r.terms).length).toBeLessThanOrEqual(256);
   });
+
+  // ── v3 review findings (TASK 8 fix) ───────────────────────────────────────
+
+  it('v3: disposition is derived from tier (BRONZE→A, DENIED→D)', async () => {
+    // Approved agent → disposition A
+    const rApproved = await underwrite(noChain, 'rAgent', demoOffChain, { now: NOW, version: 3 });
+    const tApproved = rApproved.terms as Extract<TrustTerms, { v: 3 }>;
+    expect(tApproved.disposition).toBe('A');
+    // Denied agent → disposition D
+    const rDenied = await underwrite(noChain, 'rAgent', {}, { now: NOW, version: 3 });
+    const tDenied = rDenied.terms as Extract<TrustTerms, { v: 3 }>;
+    expect(tDenied.disposition).toBe('D');
+  });
+
+  it('v3: amlResult option flows into dossier when supplied', async () => {
+    const mockAmlResult = {
+      hit: false, score: 0.1, matchedName: '', action: 'PASS' as const,
+    };
+    const r = await underwrite(noChain, 'rAgent', demoOffChain, {
+      now: NOW, version: 3, amlResult: mockAmlResult,
+    });
+    expect(r.dossier.amlResult).toBeDefined();
+    expect(r.dossier.amlResult!.action).toBe('PASS');
+    // D6 dimension should reflect the PASS from the AML result
+    const d6 = r.dossier.dimensions?.find(d => d.id === 'D6');
+    expect(d6).toBeDefined();
+    expect(d6!.status).toBe('PASS');
+  });
+
+  it('v3: amlResult DENY result flows into D6 dimension status as FAIL', async () => {
+    const mockDenyResult = {
+      hit: true, score: 0.95, matchedName: 'Viktor Bout', action: 'DENY' as const,
+    };
+    const r = await underwrite(noChain, 'rAgent', demoOffChain, {
+      now: NOW, version: 3, amlResult: mockDenyResult,
+    });
+    expect(r.dossier.amlResult).toBeDefined();
+    expect(r.dossier.amlResult!.action).toBe('DENY');
+    // D6 dimension should reflect the DENY/FAIL
+    const d6 = r.dossier.dimensions?.find(d => d.id === 'D6');
+    expect(d6).toBeDefined();
+    expect(d6!.status).toBe('FAIL');
+  });
 });

@@ -62,9 +62,11 @@ export type TrustTerms =
       /** 6-bit bitmask: D1=bit0, D2=bit1, …, D6=bit5 */
       dimsBitmask: number;
       exp: number;
-      /** 16-hex content hash of the off-chain dossier bundle (doubles as the ledger ref pointer).
-       *  Disposition is omitted from the wire format and derived from tier on decode. */
+      /** 12-hex content hash prefix of the off-chain dossier bundle (doubles as the ledger ref pointer).
+       *  Disposition is omitted from the wire format and derived from tier on decode (DENIED→D, else A). */
       contentHash: string;
+      /** Disposition derived from tier on decode (not stored on wire). Consumers can read it directly. */
+      disposition?: Disposition;
       ih?: string;
       sh?: string;
       op?: string;
@@ -132,8 +134,9 @@ export function decodeTrustURI(hex: string): TrustTerms {
   const o = JSON.parse(fromHex(hex)) as any;
   if (o.v === 3) {
     const tier: PassportTier = CHAR_TO_TIER[o.t] ?? 'DENIED';
-    // Disposition is always derived from tier (not stored on wire).
+    // Disposition is always derived from tier (not stored on wire): DENIED→D, else A.
     // contentHash doubles as the ledger ref pointer.
+    const disposition: Disposition = tier === 'DENIED' ? 'D' : 'A';
     return {
       v: 3,
       tier,
@@ -142,6 +145,7 @@ export function decodeTrustURI(hex: string): TrustTerms {
       dimsBitmask: parseInt(o.dx, 16),
       exp: o.e,
       contentHash: o.ch,
+      disposition,
       ...(o.ih ? { ih: o.ih } : {}),
       ...(o.sh ? { sh: o.sh } : {}),
       ...(o.op ? { op: o.op } : {}),

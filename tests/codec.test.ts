@@ -105,6 +105,8 @@ describe('codec', () => {
   // contentHash in v3 is a 12-hex prefix of the dossier SHA-256 (6 bytes),
   // chosen so the full wire payload (with ih+sh+op) stays within 256-hex.
   it('v3 round-trip: encode then decode returns the same object', () => {
+    // disposition is always derived on decode (GOLD → 'A'); include it in the canonical
+    // source object so the toEqual check passes (decode always populates it).
     const t: TrustTerms = {
       v: 3,
       tier: 'GOLD',
@@ -113,6 +115,7 @@ describe('codec', () => {
       dimsBitmask: 0b111111,
       exp: 900000000,
       contentHash: '23C9FE5AA800',   // 12 hex
+      disposition: 'A',              // derived from tier on decode
       ih: 'AABBCCDD',
       sh: '11223344',
       op: 'DEADBEEF',
@@ -188,6 +191,41 @@ describe('codec', () => {
     const v2: TrustTerms = { v: 2, tier: 'TIER-2', maxTxAmount: '100', score: 55, exp: 900000000, ref: 'AAAA', disposition: 'A' };
     expect(decodeTrustURI(encodeTrustURI(v1)).v).toBe(1);
     expect(decodeTrustURI(encodeTrustURI(v2)).v).toBe(2);
+  });
+
+  // ── v3 review findings (TASK 8 fix) ────────────────────────────────────────
+
+  it('v3: disposition field is present as an optional type-contract member (not on wire)', () => {
+    // disposition is part of the v3 type but derived from tier on decode (not stored on wire)
+    // DENIED tier → D; anything else → A
+    const tDenied: TrustTerms = { v: 3, tier: 'DENIED', maxTxAmount: '0', confidence: 0, dimsBitmask: 0, exp: 900000000, contentHash: 'ABCD1234ABCD' };
+    const tApproved: TrustTerms = { v: 3, tier: 'GOLD', maxTxAmount: '2000', confidence: 87, dimsBitmask: 0b111111, exp: 900000000, contentHash: 'ABCD1234ABCD' };
+    // The type allows setting disposition explicitly
+    const tWithDisp: TrustTerms = { v: 3, tier: 'GOLD', maxTxAmount: '2000', confidence: 87, dimsBitmask: 0b111111, exp: 900000000, contentHash: 'ABCD1234ABCD', disposition: 'A' };
+    // Wire format must NOT include disposition (it is derived on decode)
+    const wireDenied = JSON.parse(fromHex(encodeTrustURI(tDenied)));
+    const wireApproved = JSON.parse(fromHex(encodeTrustURI(tApproved)));
+    const wireWithDisp = JSON.parse(fromHex(encodeTrustURI(tWithDisp)));
+    expect(wireDenied).not.toHaveProperty('d');
+    expect(wireApproved).not.toHaveProperty('d');
+    expect(wireWithDisp).not.toHaveProperty('d');
+    // After decode, disposition is derived from tier
+    const backDenied = decodeTrustURI(encodeTrustURI(tDenied));
+    const backApproved = decodeTrustURI(encodeTrustURI(tApproved));
+    if (backDenied.v === 3) expect(backDenied.disposition).toBe('D');
+    if (backApproved.v === 3) expect(backApproved.disposition).toBe('A');
+  });
+
+  it('v3 contentHash JSDoc: field is 12-hex (not 16-hex)', () => {
+    // The contentHash in v3 is a 12-hex prefix (6 bytes), NOT 16-hex
+    const t: TrustTerms = {
+      v: 3, tier: 'GOLD', maxTxAmount: '2000', confidence: 87,
+      dimsBitmask: 0b111111, exp: 900000000, contentHash: 'ABCD1234ABCD',
+    };
+    expect(t.contentHash.length).toBe(12);
+    // TypeScript allows longer or shorter strings; 12 is the convention
+    const back = decodeTrustURI(encodeTrustURI(t));
+    if (back.v === 3) expect(back.contentHash.length).toBe(12);
   });
 });
 

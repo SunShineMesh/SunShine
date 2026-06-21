@@ -7,9 +7,10 @@ import { readOnChainSignals } from './signals.js';
 import { toRippleEpoch, type TrustTerms } from '../xrpl/codec.js';
 import { type Attestation, prefix8 } from '../agent/attest.js';
 import { buildDossier, type Dossier } from './dossier.js';
-import { computeTier, computeConfidence, TIER_CEILING, type TierInput } from './tier.js';
+import { computeTier, computeConfidence, type TierInput } from './tier.js';
 import { dimsBitmask, buildDimensionRecord, type DimensionRecord } from './dimension.js';
 import type { MandateRecord } from './dimension.js';
+import type { ScreeningResult } from './aml.js';
 
 export interface UnderwriteResult { decision: Decision; terms: TrustTerms; signals: Signals; dossier: Dossier; }
 
@@ -28,6 +29,7 @@ function buildV3Dimensions(signals: Signals, opts: {
   now: number;
   d5Mandate?: MandateRecord | boolean;
   settlements?: number;
+  amlResult?: ScreeningResult;
 }): DimensionRecord[] {
   const now = opts.now;
 
@@ -87,13 +89,22 @@ function buildV3Dimensions(signals: Signals, opts: {
     checkedAt: now,
   });
 
-  // D6 — AML/compliance (default PASS for basic underwrite; real AML wired in Task 9)
+  // D6 — AML/compliance: use supplied amlResult if provided, else default PASS
+  const amlResult = opts.amlResult;
+  const d6Status = amlResult
+    ? (amlResult.action === 'DENY' ? 'FAIL' : amlResult.action === 'REVIEW' ? 'PENDING' : 'PASS')
+    : 'PASS';
   const d6: DimensionRecord = buildDimensionRecord('D6', {
-    status: 'PASS',
+    status: d6Status,
     issuer: 'OFAC SDN',
-    evidenceRef: 'no-hit',
+    evidenceRef: amlResult ? (amlResult.hit ? `hit:${amlResult.matchedName}` : 'no-hit') : 'no-hit',
     evidenceHash: 'e'.repeat(64),
-    details: { action: 'PASS', provider: 'default' },
+    details: {
+      action: amlResult?.action ?? 'PASS',
+      provider: amlResult ? 'opensanctions' : 'default',
+      ...(amlResult?.matchedName ? { matchedName: amlResult.matchedName } : {}),
+      ...(amlResult?.score !== undefined ? { score: amlResult.score } : {}),
+    },
     checkedAt: now,
   });
 
@@ -121,6 +132,8 @@ export async function underwrite(
     successRate?: number;       // 0..1 escrow/payment success rate
     cleanStreakDays?: number;   // consecutive clean days
     operatorBtier?: string;     // e.g. 'BTIER-3'
+    /** AML screening result (Task 8 deliverable: flows into D6 dimension + dossier). */
+    amlResult?: ScreeningResult;
   } = {},
 ): Promise<UnderwriteResult> {
   const onChain = await readOnChainSignals(c, agentAddr);
@@ -139,18 +152,21 @@ export async function underwrite(
 
   if (version === 3) {
     // ── v3 path: tier+confidence engine ───────────────────────────────────────
-    const dims = buildV3Dimensions(signals, { now, d5Mandate: opts.d5Mandate, settlements: opts.settlements });
+    const dims = buildV3Dimensions(signals, { now, d5Mandate: opts.d5Mandate, settlements: opts.settlements, amlResult: opts.amlResult });
     const mask = dimsBitmask(dims);
 
     const settlements = opts.settlements ?? signals.rlusdPayments ?? 0;
     const windowDays = opts.windowDays ?? 0;
+
+    const d6Status = dims.find(d => d.id === 'D6')?.status;
+    const d6Pass = d6Status === 'PASS';
 
     const tierInput: TierInput = {
       d1: dims.find(d => d.id === 'D1')?.status === 'PASS',
       d2: dims.find(d => d.id === 'D2')?.status === 'PASS',
       d3: dims.find(d => d.id === 'D3')?.status === 'PASS',
       d5Mandate: dims.find(d => d.id === 'D5')?.status === 'PASS',
-      d6: 'PASS',
+      d6: d6Pass ? 'PASS' : 'FAIL',
       principal: signals.operatorBacked ? 'org' : (signals.worldId ? 'individual' : 'pseudonymous'),
       settlements,
       windowDays,
@@ -166,6 +182,12 @@ export async function underwrite(
       daysSinceLastSettlement: 0, // conservative default
     });
 
+    // Build screening record from AML result if provided.
+    const amlRes = opts.amlResult;
+    const screening = amlRes
+      ? { sanctions: amlRes.action === 'DENY' ? 'hit' : 'clear' as 'hit' | 'clear', pep: 'clear' as const, provider: 'opensanctions' }
+      : { sanctions: 'clear' as const, pep: 'clear' as const, provider: 'default' };
+
     const dossier = buildDossier({
       agentAddr,
       operatorCredId: opts.operatorCredId,
@@ -174,11 +196,13 @@ export async function underwrite(
       score: decision.score,
       tier: tierResult.tier,
       signals,
-      screening: { sanctions: 'clear', pep: 'clear', provider: 'default' },
+      screening,
       dimensions: dims,
+      ...(amlRes ? { amlResult: amlRes } : {}),
       createdAt: now,
     });
 
+    const disposition = tierResult.tier === 'DENIED' ? 'D' : 'A';
     const terms: TrustTerms = {
       v: 3,
       tier: tierResult.tier,
@@ -187,6 +211,7 @@ export async function underwrite(
       dimsBitmask: mask,
       exp,
       contentHash: contentHashFrom(dossier.ref),
+      disposition,
       ...(att ? { ih: att.ih, sh: att.sh } : {}),
       ...(opts.operatorCredId ? { op: prefix8(opts.operatorCredId) } : {}),
     };
