@@ -47,6 +47,15 @@ export interface X402GateResult {
   released?: boolean;
 }
 
+/** Ordered tier rank for comparison: higher index = higher tier. */
+const TIER_RANK: Record<PassportTier, number> = {
+  DENIED:   -1,
+  BRONZE:    0,
+  SILVER:    1,
+  GOLD:      2,
+  PLATINUM:  3,
+};
+
 /** Parameters consumed by checkPassportForX402. */
 export interface X402CheckParams {
   agentAddr: string;
@@ -58,6 +67,17 @@ export interface X402CheckParams {
   requestedAmount: string;
   /** Result from AML screening for this agent/counterparty. */
   amlResult: 'PASS' | 'REVIEW' | 'DENY';
+  /**
+   * The PassportTier held by the agent (from their credential).
+   * When provided together with `requiredTier`, Gate 4 enforces the minimum
+   * tier required by the resource. Omit both to skip the tier check (backward compat).
+   */
+  agentTier?: PassportTier;
+  /**
+   * Minimum PassportTier the resource requires.
+   * Must be provided alongside `agentTier`; ignored when either is absent.
+   */
+  requiredTier?: PassportTier;
 }
 
 // ── Core gate logic ──────────────────────────────────────────────────────────
@@ -107,6 +127,20 @@ export async function checkPassportForX402(
     };
   }
 
+  // Gate 4 — agent tier vs resource required tier.
+  // Only enforced when both `agentTier` and `requiredTier` are supplied.
+  if (params.agentTier !== undefined && params.requiredTier !== undefined) {
+    const agentRank = TIER_RANK[params.agentTier] ?? -1;
+    const requiredRank = TIER_RANK[params.requiredTier] ?? 0;
+    if (agentRank < requiredRank) {
+      return {
+        allowed: false,
+        status: 402,
+        reason: `agent tier ${params.agentTier} below required tier ${params.requiredTier}`,
+      };
+    }
+  }
+
   // All gates passed — resource released.
   return {
     allowed: true,
@@ -151,24 +185,27 @@ export function buildX402Response(requirements: X402Requirements): {
  * On every request:
  *   1. Reads the agent address from `req.headers['x-agent-addr']` or the body.
  *   2. Fetches the agent's credential via `fetchCredential`.
- *   3. Screens the agent address against the AML list via `amlMatcher`.
- *   4. Checks tier ceiling vs `requirements.amount`.
- *   5. Calls `next()` on pass; sends 402 JSON on denial.
+ *   3. Screens the agent's legal name (or address) against the AML list via `amlMatcher`.
+ *   4. Checks agent tier >= resource's requiredTier.
+ *   5. Checks tier ceiling vs `requirements.amount`.
+ *   6. Calls `next()` on pass; sends 402 JSON on denial.
  *
  * @param requirements  The resource's payment/tier requirements.
  * @param fetchCredential  Async function that resolves to a credential view (or null).
+ *   The view may carry a `tier` field (PassportTier) used for the tier gate.
  * @param amlMatcher  Compiled AML screening function.
  */
 export function x402Middleware(
   requirements: X402Requirements,
-  fetchCredential: (addr: string) => Promise<{ accepted?: boolean } | null>,
+  fetchCredential: (addr: string) => Promise<{ accepted?: boolean; tier?: PassportTier } | null>,
   amlMatcher: AmlMatcher,
 ): RequestHandler {
   return async (req: Request, res: Response, next: Function): Promise<void> => {
     // Resolve the agent address from the request.
+    const body = req.body as Record<string, string> | undefined;
     const agentAddr =
       (req.headers['x-agent-addr'] as string | undefined) ||
-      (req.body as Record<string, string>)?.agentAddr ||
+      body?.agentAddr ||
       '';
 
     if (!agentAddr) {
@@ -181,12 +218,26 @@ export function x402Middleware(
     }
 
     // Fetch credential.
+    // accepted=true → valid; accepted=false (present but not yet accepted / revoked) → revoked;
+    // null (not found) → missing.
     const credView = await fetchCredential(agentAddr).catch(() => null);
     const credentialStatus: X402CheckParams['credentialStatus'] =
-      !credView ? 'missing' : credView.accepted ? 'valid' : 'missing';
+      credView === null
+        ? 'missing'
+        : credView.accepted
+          ? 'valid'
+          : 'revoked';
 
-    // AML screen the agent address.
-    const amlScreening = amlMatcher(agentAddr);
+    // Read the agent's PassportTier from the credential view when available.
+    const agentTier: PassportTier | undefined = credView?.accepted
+      ? (credView.tier ?? undefined)
+      : undefined;
+
+    // AML screen: prefer a legal name from the request body; fall back to address.
+    // Screening an XRPL address against an SDN list of human names is structurally
+    // ineffective — callers should supply the principal's legal name as `agentName`.
+    const screenTarget: string = body?.agentName ?? agentAddr;
+    const amlScreening = amlMatcher(screenTarget);
     const amlResult: X402CheckParams['amlResult'] = amlScreening.action;
 
     // Run the gate.
@@ -196,6 +247,8 @@ export function x402Middleware(
       tierCeiling: requirements.amount, // use the resource's own declared amount as ceiling
       requestedAmount: requirements.amount,
       amlResult,
+      agentTier,
+      requiredTier: requirements.requiredTier,
     });
 
     if (!gateResult.allowed) {

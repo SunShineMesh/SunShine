@@ -321,19 +321,30 @@ async function main() {
 
   app.post('/api/x402/resource', async (req, res) => {
     try {
-      const { agentAddr, requestedAmount } = req.body as { agentAddr?: string; requestedAmount?: string };
+      const { agentAddr, agentName, requestedAmount } = req.body as {
+        agentAddr?: string; agentName?: string; requestedAmount?: string;
+      };
       if (!agentAddr) {
         const r402 = buildX402Response(x402Requirements);
         return res.status(402).set(r402.headers).json({ ...r402.body, reason: 'no agent address provided' });
       }
 
       // Fetch the on-ledger credential for this agent.
+      // accepted=true → valid; accepted=false (present but un-accepted or revoked) → revoked;
+      // null (not found on ledger) → missing.
       const credView = await fetchCredential(c, agentAddr, treasury.address).catch(() => null);
       const credentialStatus: 'valid' | 'missing' | 'revoked' =
-        !credView ? 'missing' : credView.accepted ? 'valid' : 'missing';
+        credView === null
+          ? 'missing'
+          : credView.accepted
+            ? 'valid'
+            : 'revoked';
 
-      // AML screen the agent address (the agent's address is the identity being screened).
-      const amlScreening = x402AmlMatcher(agentAddr);
+      // AML screen: prefer the principal's legal name supplied in the request body.
+      // Screening an XRPL address against an SDN list of human names is structurally
+      // ineffective — use agentName when available; fall back to address as a last resort.
+      const screenTarget = agentName ?? agentAddr;
+      const amlScreening = x402AmlMatcher(screenTarget);
 
       // Run the x402 gate.
       const gateResult = await checkPassportForX402({
@@ -342,6 +353,8 @@ async function main() {
         tierCeiling: x402Requirements.amount,
         requestedAmount: requestedAmount ?? x402Requirements.amount,
         amlResult: amlScreening.action,
+        agentTier: credView?.accepted ? (credView.terms as any)?.tier : undefined,
+        requiredTier: x402Requirements.requiredTier,
       });
 
       if (!gateResult.allowed) {
