@@ -30,7 +30,7 @@ import { type Signals } from '../kya/scorecard.js';
 import { setupDepositPreauth, buildAcceptedCredentials, gateCheck } from '../xrpl/domain.js';
 import { submitPaymentForApproval, approveAndRelease, rejectAndRefund } from '../xrpl/bankGate.js';
 import { issueOperatorCredential, acceptOperatorCredential, fetchOperatorCredential, type OperatorTerms } from '../xrpl/operator.js';
-import { kybScore, delegationCapCheck, type KybSignals, type KybDecision } from '../kya/kyb.js';
+import { kybScore, delegationCapCheck, type KybSignals } from '../kya/kyb.js';
 import { zefixLookup, buildKybSignalsFromZefix } from '../kya/zefixClient.js';
 import { buildAmlMatcher, screenName } from '../kya/aml.js';
 import { computeTier, computeConfidence, effectiveCeiling, TIER_CEILING } from '../kya/tier.js';
@@ -78,9 +78,16 @@ const tecOf = (e: any): string => ((e?.message || String(e)).match(/te[a-z][A-Z_
 /** Shared delegation budget tracker for the operator's aggregate cap. */
 type Budget = { allocated: string };
 
-function drawBudget(budget: Budget, amount: string): { ok: boolean; reason?: string } {
+/**
+ * Draw down the shared delegation budget against the given cap.
+ * @param budget   Mutable tracker of total allocated spend.
+ * @param amount   Requested allocation amount.
+ * @param cap      The ceiling to check against (operator maxDelegatedSpend or an agent
+ *                 sub-cap such as the tier ceiling). Callers must pass the right cap.
+ */
+function drawBudget(budget: Budget, amount: string, cap: string): { ok: boolean; reason?: string } {
   const result = delegationCapCheck({
-    maxDelegatedSpend: TIER_CEILING.GOLD,  // operator KYB ceiling from kybScore
+    maxDelegatedSpend: cap,
     allocatedTotal: budget.allocated,
     requestedAllocation: amount,
   });
@@ -281,8 +288,8 @@ export async function runCrossBorderScenario(deps: {
       tier: 'BRONZE', maxTxAmount: TIER_CEILING.BRONZE,
     });
 
-    // Draw down abstract delegation budget.
-    const drawA = drawBudget(budget, amountA);
+    // Draw down abstract delegation budget against the operator-level cap.
+    const drawA = drawBudget(budget, amountA, maxDelegatedSpend);
 
     if (assessA.decision === 'PROCEED' && drawA.ok) {
       // Actual RLUSD transfer: tiny amount (≤ 0.5 RLUSD) from demoAgent → supplierA.
@@ -359,7 +366,7 @@ export async function runCrossBorderScenario(deps: {
       tier: 'BRONZE', maxTxAmount: TIER_CEILING.BRONZE,
     });
 
-    const drawB = drawBudget(budget, amountB);
+    const drawB = drawBudget(budget, amountB, maxDelegatedSpend);
 
     if (assessB.decision === 'PROCEED' && drawB.ok) {
       const handleB = await submitPaymentForApproval(
@@ -386,27 +393,32 @@ export async function runCrossBorderScenario(deps: {
         data: { decision: assessB.decision, rationale: assessB.rationale, reason: drawB.reason } });
     }
 
-    // ── STEP 10 · denial_budget — agentB attempts $500 → delegation cap DENIES
+    // ── STEP 10 · denial_budget — agentB attempts $500 → BRONZE sub-cap DENIES
+    // agentB is a BRONZE-tier agent. The per-agent sub-cap is the BRONZE tier ceiling ($100).
+    // After $50 (settle_a) + $60 (settle_b) = $110 already allocated, any further
+    // request — and certainly $500 — exceeds the $100 sub-cap. The check is against the
+    // agent's BRONZE ceiling, not the operator-level maxDelegatedSpend ($50,000).
+    const bronzeSubCap = TIER_CEILING.BRONZE; // $100 — agentB is BRONZE tier
     start({ id: 'denial_budget', phase: 'denial', actor: CAST.agentB.name,
-      title: `Denial #2 — delegation cap ($500 > remaining budget)`,
-      body: `${CAST.agentB.flag} agentB attempts a $500 payment. delegationCapCheck() denies because allocated + 500 > maxDelegatedSpend.` });
+      title: `Denial #2 — delegation sub-cap ($500 > BRONZE ceiling $${bronzeSubCap})`,
+      body: `${CAST.agentB.flag} agentB (BRONZE) attempts a $500 payment. delegationCapCheck() denies because allocated ($${budget.allocated}) + $500 > agent sub-cap ($${bronzeSubCap}).` });
 
     const bigAmount = '500';
     const capResult = delegationCapCheck({
-      maxDelegatedSpend,
+      maxDelegatedSpend: bronzeSubCap,  // agent sub-cap: BRONZE ceiling
       allocatedTotal: budget.allocated,
       requestedAllocation: bigAmount,
     });
 
     // Model reacts to the budget denial.
     const budgetDenialReact = await reason(
-      `You are Bravo, an autonomous logistics AI agent. Your operator's delegation budget is $${maxDelegatedSpend}, currently $${budget.allocated} allocated.`,
-      `You attempted a $${bigAmount} payment but the remaining delegation budget ($${Number(maxDelegatedSpend) - Number(budget.allocated)}) is insufficient. Briefly explain your adaptation strategy. One sentence.`,
+      `You are Bravo, an autonomous logistics AI agent with a BRONZE credential (ceiling $${bronzeSubCap}). The shared budget already has $${budget.allocated} allocated.`,
+      `You attempted a $${bigAmount} payment but your BRONZE delegation sub-cap is $${bronzeSubCap} and $${budget.allocated} is already allocated. Briefly explain your adaptation strategy. One sentence.`,
       { model: CONFIG.deepseek.flashModel, maxTokens: 700 },
     );
     patch('denial_budget', { status: 'denied', data: {
-      requestedAmount: bigAmount, maxDelegatedSpend, allocatedTotal: budget.allocated,
-      remaining: String(Number(maxDelegatedSpend) - Number(budget.allocated)),
+      requestedAmount: bigAmount, bronzeSubCap, allocatedTotal: budget.allocated,
+      remaining: String(Math.max(0, Number(bronzeSubCap) - Number(budget.allocated))),
       denied: !capResult.allowed, reason: capResult.reason ?? 'cap check passed (unexpected)',
       agentReaction: budgetDenialReact.content, model: budgetDenialReact.model,
       ms: budgetDenialReact.ms, fallback: budgetDenialReact.fallback,
@@ -483,7 +495,7 @@ export async function runCrossBorderScenario(deps: {
     const compKya = await underwrite(c, compromisedAgent.address, offChainFresh, {
       attestation, operatorCredId: opView?.credId, version: 3,
     });
-    const compIssue = await issueCredential(c, treasury, compromisedAgent.address, compKya.terms);
+    const _compIssue = await issueCredential(c, treasury, compromisedAgent.address, compKya.terms);
     await acceptCredential(c, compromisedAgent, treasury.address);
     const killHash = await revokeCredential(c, treasury, compromisedAgent.address);
 
@@ -508,7 +520,7 @@ export async function runCrossBorderScenario(deps: {
       title: `${CAST.agentA.name} pays after kill (confirms unaffected)`,
       body: `${CAST.agentA.flag} agentA was never revoked. This payment succeeds, proving the kill-switch is surgical.` });
 
-    const drawConfirm = drawBudget(budget, confirmAmount);
+    const drawConfirm = drawBudget(budget, confirmAmount, maxDelegatedSpend);
 
     let confirmOk = false;
     let confirmHash: string | undefined;
@@ -535,9 +547,6 @@ export async function runCrossBorderScenario(deps: {
       } });
 
     // ── Final summary ─────────────────────────────────────────────────────────
-    const ok = !tierDenied === false && amlDenied && declined && good.recognized && !swap.recognized
-              && !gAfterKill.allowed && gAgentAAfterKill.allowed;
-
     emit({ type: 'demo_done', ok: true, /* always emit done=true if we reached here without throwing */
       summary: {
         operatorUid: CAST.operator.uid, operatorDataSource: zefixDetail._dataSource,
