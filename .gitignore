@@ -21,3 +21,5 @@ smoke-pivot.ts
 smoke-tierb.ts
 smoke.mjs
 setup-demo-wallet.ts
+# Large AML CSV snapshots — only the small fixture is committed
+data/*.csv
