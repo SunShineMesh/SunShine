@@ -42,4 +42,59 @@ describe('readOnChainSignals', () => {
     const c = { request: async () => { throw new Error('actNotFound'); } } as any;
     expect(await readOnChainSignals(c, 'rX')).toEqual({});
   });
+
+  // D4 third-party-only filter (Sybil fix)
+  it('excludes self-payment (dest == agentAddr) from rlusdPayments', async () => {
+    const genesis = nowRipple - 30 * 86400;
+    const recentDate = nowRipple - 1 * 86400; // 1 day ago — within 90d window
+    const recent = [
+      // self-loop: destination is the agent itself → must NOT be counted
+      { tx: { TransactionType: 'Payment', Destination: 'rAGENT', date: recentDate } },
+      // third-party payment → must be counted
+      { tx: { TransactionType: 'Payment', Destination: 'rOTHER', date: recentDate } },
+    ];
+    const s = await readOnChainSignals(fakeClient(genesis, recent), 'rAGENT');
+    expect(s.rlusdPayments).toBe(1);
+  });
+
+  it('excludes EscrowFinish where destination is the agent itself', async () => {
+    const genesis = nowRipple - 30 * 86400;
+    const recentDate = nowRipple - 1 * 86400;
+    const recent = [
+      // self-finish: escrow finishes back to the agent → must NOT count
+      { tx: { TransactionType: 'EscrowFinish', Destination: 'rAGENT', date: recentDate } },
+      // third-party escrow finish → must count
+      { tx: { TransactionType: 'EscrowFinish', Destination: 'rSUPPLIER', date: recentDate } },
+      // escrow create (needed for completion rate denominator)
+      { tx: { TransactionType: 'EscrowCreate', date: recentDate } },
+    ];
+    const s = await readOnChainSignals(fakeClient(genesis, recent), 'rAGENT');
+    // Only 1 of 2 EscrowFinishes counts as third-party; EscrowCreate = 1
+    // escrowCompletionRate = min(thirdPartyFinish / escrowCreate, 1) = min(1/1, 1) = 1
+    expect(s.escrowCompletionRate).toBe(1);
+  });
+
+  it('excludes transactions older than 90 days from behavioral counts', async () => {
+    const genesis = nowRipple - 120 * 86400;
+    const oldDate = nowRipple - 91 * 86400; // 91 days ago — outside the 90d window
+    const recentDate = nowRipple - 1 * 86400; // 1 day ago — inside window
+    const recent = [
+      // old tx (outside window) → must NOT count
+      { tx: { TransactionType: 'Payment', Destination: 'rOTHER', date: oldDate } },
+      // recent third-party tx → must count
+      { tx: { TransactionType: 'Payment', Destination: 'rOTHER', date: recentDate } },
+    ];
+    const s = await readOnChainSignals(fakeClient(genesis, recent), 'rAGENT');
+    expect(s.rlusdPayments).toBe(1);
+  });
+
+  it('counts 5 real third-party payments as rlusdPayments === 5', async () => {
+    const genesis = nowRipple - 30 * 86400;
+    const recentDate = nowRipple - 1 * 86400;
+    const recent = Array.from({ length: 5 }, () => ({
+      tx: { TransactionType: 'Payment', Destination: 'rSUPPLIER', date: recentDate },
+    }));
+    const s = await readOnChainSignals(fakeClient(genesis, recent), 'rAGENT');
+    expect(s.rlusdPayments).toBe(5);
+  });
 });
