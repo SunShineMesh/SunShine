@@ -2,25 +2,53 @@
 // XRPL testnet. Every transaction is real; the agent's risk decision is a real
 // DeepSeek call. The whole arc streams in over SSE from /api/demo/run.
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { subscribe, runDemo, type DemoStep } from './api';
+import { subscribe, runDemo, type DemoStep, type DimensionRecord } from './api';
 import { Passport, type PassportData } from './Passport';
+import { WorldIdBadge } from './WorldIdBadge';
 
 // Default cast (the server re-sends this on demo_start); lets the corridor render before a run.
+// Updated for the v2 scenario: Novartis AG with agentA (Aria) + agentB + supplierA + supplierB.
 const CAST = {
-  operator: { name: 'Helvetia Components AG', sub: 'Zürich · Switzerland', flag: '🇨🇭', key: 'operator' },
-  agent: { name: 'Aria', sub: "Helvetia's procurement agent", flag: '🤖', key: 'agent' },
-  bureau: { name: 'MeshCredit', sub: 'trust bureau · issuer', flag: '◇', key: 'bureau' },
-  bank: { name: 'Settlement Bank', sub: 'gates its account', flag: '🏦', key: 'bank' },
-  payee: { name: 'Lagos Precision Parts', sub: 'Lagos · Nigeria', flag: '🇳🇬', key: 'payee' },
+  operator:  { name: 'Novartis AG', sub: 'Basel · Switzerland', flag: '🇨🇭', key: 'operator' },
+  agentA:    { name: 'Aria', sub: 'procurement agent', flag: '🤖', key: 'agentA' },
+  agentB:    { name: 'Bravo', sub: 'logistics agent', flag: '🤖', key: 'agentB' },
+  bureau:    { name: 'MeshCredit', sub: 'trust bureau · issuer', flag: '◇', key: 'bureau' },
+  bank:      { name: 'Settlement Bank', sub: 'gates its account', flag: '🏦', key: 'bank' },
+  supplierA: { name: 'Lagos Precision Parts', sub: 'Lagos · Nigeria', flag: '🇳🇬', key: 'supplierA' },
+  supplierB: { name: 'Taipei Tech Components', sub: 'Taipei · Taiwan', flag: '🇹🇼', key: 'supplierB' },
+  // Legacy key aliases so old step events that emit 'agent'/'payee' still light up correctly
+  agent: { name: 'Aria', sub: 'procurement agent', flag: '🤖', key: 'agentA' },
+  payee: { name: 'Lagos Precision Parts', sub: 'Lagos · Nigeria', flag: '🇳🇬', key: 'supplierA' },
 };
-const STATIONS = [CAST.operator, CAST.agent, CAST.bureau, CAST.bank, CAST.payee];
+const STATIONS = [CAST.operator, CAST.agentA, CAST.bureau, CAST.bank, CAST.supplierA];
 
 // Which actors each step lights up on the corridor.
+// v2 step IDs follow the new scenario arc; v1 IDs kept for backward compat.
 const ACTORS: Record<string, string[]> = {
-  setup: ['operator', 'agent', 'bureau', 'bank', 'payee'],
-  kyb: ['operator', 'bureau'], gate: ['bank'], kya: ['agent', 'bureau'],
-  reason: ['agent'], fx: ['agent'], escrow: ['agent', 'bank'], gatecheck: ['bank'],
-  release: ['agent', 'bank', 'payee'], contrast: ['bank'], skill: ['agent', 'bureau'], kill: ['bureau', 'agent'],
+  // v2 arc
+  setup:          ['operator', 'agentA', 'agentB', 'bureau', 'bank', 'supplierA', 'supplierB'],
+  kyb:            ['operator', 'bureau'],
+  gate:           ['bank'],
+  kya_fresh:      ['agentA', 'bureau'],
+  kya_thick:      ['agentA', 'bureau'],
+  mandate:        ['operator', 'agentA'],
+  reason:         ['agentA'],
+  settle_a:       ['agentA', 'bank', 'supplierA'],
+  denial_tier:    ['agentA', 'bureau'],
+  settle_b:       ['agentB', 'bank', 'supplierB'],
+  denial_budget:  ['agentB', 'bureau'],
+  denial_aml:     ['agentA', 'bureau'],
+  contrast:       ['bank'],
+  codeswap:       ['agentA', 'bureau'],
+  kill:           ['bureau', 'agentA'],
+  confirm_a:      ['agentA', 'bank', 'supplierA'],
+  // v1 legacy IDs (pre-v2 scenario)
+  kya:            ['agentA', 'bureau'],
+  fx:             ['agentA'],
+  escrow:         ['agentA', 'bank'],
+  gatecheck:      ['bank'],
+  release:        ['agentA', 'bank', 'supplierA'],
+  skill:          ['agentA', 'bureau'],
 };
 const PHASE_LABEL: Record<string, string> = {
   setup: 'Setup', identity: 'Identity', reasoning: 'Agent reasoning',
@@ -66,11 +94,25 @@ export default function Live() {
   const stepsArr = useMemo(() => [...steps.values()].sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0)), [steps]);
   const activeStep = useMemo(() => [...stepsArr].reverse().find((s) => s.status === 'active') ?? stepsArr[stepsArr.length - 1], [stepsArr]);
   const liveActors = new Set(activeStep ? ACTORS[activeStep.id] ?? [] : []);
-  const kya = steps.get('kya');
+
+  // v2 scenario uses 'kya_fresh' as the primary KYA step; fall back to v1 'kya' for compat.
+  const kya = steps.get('kya_fresh') ?? steps.get('kya');
   const kill = steps.get('kill');
   const reason = steps.get('reason');
   const passport: PassportData | null = kya?.data ? { ...(kya.data as any), revoked: !!kill?.tx } : null;
   const txs = stepsArr.filter((s) => s.tx).map((s) => ({ ...s.tx!, id: s.id }));
+
+  // Extract the D2 dimension from any step that carries dimensions (e.g. kya_fresh).
+  const d2Dimension = useMemo<DimensionRecord | undefined>(() => {
+    for (const step of stepsArr) {
+      const dims = (step.data as any)?.dimensions as DimensionRecord[] | undefined;
+      if (dims) {
+        const d2 = dims.find((d) => d.id === 'D2');
+        if (d2) return d2;
+      }
+    }
+    return undefined;
+  }, [stepsArr]);
   const start = async () => { setErr(null); const r = await runDemo(); if (r?.error) { setErr(r.error); setRunning(false); } };
 
   return (
@@ -114,7 +156,7 @@ export default function Live() {
       {summary && (
         <div className="wrap"><div className={'verdict ' + (summary.ok ? 'pass' : 'fail')}>
           {summary.ok
-            ? <>✓ <b>Settled.</b> {CAST.agent.name} ({summary.summary?.tier}) was fast-tracked to Lagos; the uncertified agent was denied by consensus.</>
+            ? <>✓ <b>Settled.</b> {CAST.agentA.name} ({summary.summary?.tier ?? summary.summary?.tier_v3}) was credentialed and paid across borders; three denial arcs blocked as expected.</>
             : <>✕ Run ended early{err ? `: ${err}` : ''}.</>}
         </div></div>
       )}
@@ -135,6 +177,16 @@ export default function Live() {
         <aside className="rail">
           <MindPanel reason={reason} running={running} brain={brain} />
           {passport ? <Passport d={passport} /> : <Passport d={{}} pending />}
+          {/* D2 World ID badge — shown in the right rail when a D2 dimension record is present */}
+          {d2Dimension && (
+            <WorldIdBadge
+              proofPending={d2Dimension.status !== 'PASS'}
+              nullifier={d2Dimension.status === 'PASS' ? d2Dimension.evidenceRef : undefined}
+              verificationLevel={
+                (d2Dimension.details?.verificationLevel as 'orb' | 'device' | undefined) ?? 'device'
+              }
+            />
+          )}
           {txs.length > 0 && (
             <div className="tape">
               <div className="tape-h">On-ledger transactions <span>{txs.length}</span></div>
@@ -217,21 +269,81 @@ function StepCard({ s }: { s: DemoStep }) {
 function StepData({ s }: { s: DemoStep }) {
   const d = s.data as any;
   if (!d) return null;
+
+  // Helper: render dimension chips from a DimensionRecord array.
+  const DimChips = ({ dims }: { dims: DimensionRecord[] }) => (
+    <div className="sc-chips sc-dims">
+      {dims.map((dim) => (
+        <Chip
+          key={dim.id}
+          k={dim.id}
+          v={dim.status}
+          good={dim.status === 'PASS'}
+          bad={dim.status === 'FAIL' || dim.status === 'DENY'}
+        />
+      ))}
+    </div>
+  );
+
   switch (s.id) {
     case 'kyb':
       return <div className="sc-chips"><Chip k="business tier" v={d.btier} /><Chip k="delegated cap" v={`$${d.maxDelegatedSpend}`} /><Chip k="jurisdiction" v={d.jurisdiction} /></div>;
+
+    // v1 kya (legacy)
     case 'kya':
       return <div className="sc-chips"><Chip k="score" v={d.score} accent /><Chip k="tier" v={d.tier} accent /><Chip k="ceiling" v={`$${d.maxTxAmount}`} /></div>;
-    case 'gatecheck':
-      return <div className="sc-chips"><Chip k="amount" v={`$${d.amount}`} /><Chip k="ceiling" v={`$${d.maxTxAmount}`} /><Chip k={d.allowed ? 'gate' : 'gate'} v={d.allowed ? 'ALLOW' : 'DENY'} good={d.allowed} bad={!d.allowed} /></div>;
+
+    // v2 KYA steps — show tier, confidence, and dimension breakdown
+    case 'kya_fresh':
+    case 'kya_thick': {
+      const tier = d.tier_v3 ?? d.tier;
+      const conf = d.confidence !== undefined ? `${d.confidence}%` : undefined;
+      return (
+        <>
+          <div className="sc-chips">
+            <Chip k="tier" v={tier} accent />
+            {conf && <Chip k="confidence" v={conf} />}
+            <Chip k="ceiling" v={`$${d.maxTxAmount}`} />
+          </div>
+          {d.dimensions && <DimChips dims={d.dimensions} />}
+        </>
+      );
+    }
+
+    case 'mandate':
+      return <div className="sc-chips"><Chip k="D5 mandate" v={d.mandateIssued ? 'issued' : 'pending'} good={!!d.mandateIssued} /></div>;
+
     case 'reason':
       return d.decision ? <div className="sc-chips"><Chip k="agent decision" v={d.decision} good={d.decision === 'PROCEED'} bad={d.decision !== 'PROCEED'} /></div> : null;
+
+    // Settlement steps
+    case 'settle_a':
+    case 'settle_b':
+    case 'confirm_a':
+      return <div className="sc-chips"><Chip k="amount" v={d.amount ? `$${d.amount}` : '—'} /><Chip k="status" v={d.status ?? 'OK'} good /></div>;
+
+    // Denial steps
+    case 'denial_tier':
+      return <div className="sc-chips"><Chip k="tier ceiling" v={`$${d.ceiling ?? d.maxTxAmount}`} /><Chip k="requested" v={`$${d.requested ?? d.amount}`} /><Chip k="verdict" v="DENIED" bad /></div>;
+
+    case 'denial_budget':
+      return <div className="sc-chips"><Chip k="remaining budget" v={`$${d.remaining ?? '—'}`} /><Chip k="requested" v={`$${d.requested ?? d.amount}`} /><Chip k="verdict" v="DENIED" bad /></div>;
+
+    case 'denial_aml':
+      return <div className="sc-chips"><Chip k="D6 AML" v={d.amlAction ?? 'DENY'} bad /><Chip k="matched" v={d.matchedName ?? d.amlTarget ?? '—'} bad /><Chip k="verdict" v="BLOCKED" bad /></div>;
+
+    case 'gatecheck':
+      return <div className="sc-chips"><Chip k="amount" v={`$${d.amount}`} /><Chip k="ceiling" v={`$${d.maxTxAmount}`} /><Chip k={d.allowed ? 'gate' : 'gate'} v={d.allowed ? 'ALLOW' : 'DENY'} good={d.allowed} bad={!d.allowed} /></div>;
+
     case 'codeswap':
       return <div className="sc-chips"><Chip k="audited build" v="recognized" good /><Chip k="tampered build" v="rejected" bad /></div>;
+
     case 'contrast':
       return <div className="sc-chips"><Chip k="ledger verdict" v={d.code ?? 'tecNO_PERMISSION'} bad /></div>;
+
     case 'kill':
       return <div className="sc-chips"><Chip k="gate after revoke" v={d.gateAllowed ? 'ALLOW' : 'DENY'} bad={!d.gateAllowed} /></div>;
+
     default:
       return null;
   }

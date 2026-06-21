@@ -1,5 +1,10 @@
 // Thin client for the MeshCredit treasury API + live SSE feed.
-export type Tier = 'DENIED' | 'TIER-1' | 'TIER-2' | 'TIER-3' | 'TIER-4';
+
+// v2 tier names (BRONZE→PLATINUM). Old TIER-N names kept as union members
+// for backward compatibility with any cached data that still uses them.
+export type PassportTier = 'DENIED' | 'BRONZE' | 'SILVER' | 'GOLD' | 'PLATINUM';
+export type Tier = PassportTier | 'TIER-1' | 'TIER-2' | 'TIER-3' | 'TIER-4';
+
 export interface Terms { v: number; tier: Tier; maxTxAmount: string; score: number; exp: number; ref: string; }
 export interface SkillTerms { v: number; skillId: string; skillVersion: string; benchmarkHash: string; exp: number; }
 export interface Health { ok: boolean; network: string; asset: string; treasury: string; bank: string; }
@@ -8,6 +13,26 @@ export interface Payment {
   status: string; createdAt: number; escrowHash?: string; finishHash?: string;
 }
 export interface GateResult { allowed: boolean; tier: Tier | null; reason: string; }
+
+// ── Dimension types (mirror of backend src/kya/dimension.ts) ──
+export type DimensionId = 'D1' | 'D2' | 'D3' | 'D4' | 'D5' | 'D6';
+export type DimensionStatus = 'PASS' | 'FAIL' | 'REVIEW' | 'PENDING' | 'DENY';
+
+/** A single dimension's evidence record from the passport bundle. */
+export interface DimensionRecord {
+  id: DimensionId;
+  status: DimensionStatus;
+  /** Named external issuer (e.g. 'Zefix', 'World ID', 'Public XRPL', 'OFAC SDN'). */
+  issuer: string;
+  /** Human-readable pointer to the evidence artifact. */
+  evidenceRef: string;
+  /** SHA-256 hex of the raw evidence artifact. */
+  evidenceHash: string;
+  /** Dimension-specific structured data (PII stays off-ledger). */
+  details: Record<string, unknown>;
+  /** Unix milliseconds when the check was performed. */
+  checkedAt: number;
+}
 
 const j = async (r: Response) => { const t = await r.text(); try { return JSON.parse(t); } catch { return t; } };
 const POST = (p: string, body?: object) =>
@@ -46,7 +71,14 @@ export interface DemoStep {
   body?: string;
   status: 'active' | 'done' | 'denied' | 'info';
   tx?: { kind: string; label: string; hash: string; url: string };
-  data?: Record<string, any>;
+  data?: Record<string, any> & {
+    /** Six-dimension passport breakdown (v2 scenario). */
+    dimensions?: DimensionRecord[];
+    /** Confidence percentage (0-100) from the tier engine. */
+    confidence?: number;
+    /** v3 tier name (BRONZE/SILVER/GOLD/PLATINUM/DENIED). */
+    tier_v3?: PassportTier;
+  };
 }
 /** Kick off the streamed cross-border scenario (progress arrives over SSE). */
 export const runDemo = (): Promise<{ started?: boolean; error?: string }> => POST('/api/demo/run');

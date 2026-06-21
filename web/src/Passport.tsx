@@ -1,6 +1,6 @@
 // The trustworthiness passport — the agent's on-ledger XLS-70 trust credential,
 // rendered as the product's hero artifact. Purely presentational.
-import { explorerAcct, short } from './api';
+import { explorerAcct, short, type DimensionRecord, type DimensionStatus } from './api';
 
 export interface PassportData {
   agent?: string;
@@ -17,13 +17,69 @@ export interface PassportData {
   exp?: number;
   breakdown?: { label: string; pts: number; max: number; src: string }[];
   revoked?: boolean;
+  /** Confidence percentage (0-100) from the tier engine. */
+  confidence?: number;
+  /** Six-dimension evidence records (D1–D6). */
+  dimensions?: DimensionRecord[];
 }
 
 const TIER_COLOR: Record<string, string> = {
-  DENIED: 'var(--faint)', 'TIER-1': 'var(--signal)', 'TIER-2': 'var(--mesh-1)',
+  // v2 names (BRONZE→PLATINUM)
+  DENIED:   'var(--faint)',
+  BRONZE:   'var(--signal)',
+  SILVER:   'var(--mesh-1)',
+  GOLD:     'var(--mesh-2)',
+  PLATINUM: 'var(--credit)',
+  // v1 names kept for backward compatibility with any pre-v2 data
+  'TIER-1': 'var(--signal)', 'TIER-2': 'var(--mesh-1)',
   'TIER-3': 'var(--mesh-2)', 'TIER-4': 'var(--credit)',
 };
 const SRC_COLOR: Record<string, string> = { 'off-chain': 'var(--mesh-1)', 'on-chain': 'var(--credit)', KYB: 'var(--mesh-2)' };
+
+// ── Dimension status pill ──────────────────────────────────────────────────────
+const DIM_STATUS_COLOR: Record<DimensionStatus, string> = {
+  PASS:    'var(--mesh-2)',
+  FAIL:    'var(--danger)',
+  REVIEW:  'var(--signal)',
+  PENDING: 'var(--faint)',
+  DENY:    'var(--danger)',
+};
+
+const DIM_LABEL: Record<string, string> = {
+  D1: 'Identity',
+  D2: 'Human',
+  D3: 'Code',
+  D4: 'Behavior',
+  D5: 'Mandate',
+  D6: 'AML',
+};
+
+/** Render the six-dimension evidence panel. */
+function DimensionPanel({ dims }: { dims: DimensionRecord[] }) {
+  return (
+    <div className="pp-dims">
+      <div className="pp-dims-h">Six dimensions — each backed by a named issuer</div>
+      {dims.map((dim) => (
+        <div className="pp-dim-row" key={dim.id}>
+          <span className="pp-dim-id">{dim.id}</span>
+          <span className="pp-dim-label">{DIM_LABEL[dim.id] ?? dim.id}</span>
+          <span
+            className="pp-dim-status"
+            style={{ color: DIM_STATUS_COLOR[dim.status] ?? 'var(--faint)' }}
+          >
+            {dim.status}
+          </span>
+          <span className="pp-dim-issuer">{dim.issuer}</span>
+          {dim.evidenceRef && (
+            <span className="pp-dim-ref mono" title={dim.evidenceRef}>
+              {short(dim.evidenceRef, 8)}
+            </span>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
 
 function Ring({ score, color }: { score: number; color: string }) {
   const R = 34, C = 2 * Math.PI * R;
@@ -60,6 +116,12 @@ export function Passport({ d, pending }: { d: PassportData; pending?: boolean })
         <div>
           <div className="pp-chip">XLS-70 · agent_trust_v1</div>
           <div className="pp-tier" style={{ color }}>{tier}</div>
+          {/* Confidence percentage — shown for v2 passports that carry it */}
+          {d.confidence !== undefined && (
+            <div className="pp-confidence" style={{ color, opacity: 0.8, fontSize: 13, marginTop: 2 }}>
+              {tier} · {d.confidence}% confidence
+            </div>
+          )}
         </div>
         <Ring score={d.score ?? 0} color={color} />
       </div>
@@ -70,6 +132,12 @@ export function Passport({ d, pending }: { d: PassportData; pending?: boolean })
         <div className="pp-metric"><div className="ppm-l">Status</div><div className="ppm-v" style={{ fontSize: 15, color }}>{d.revoked ? '○ revoked' : '● on-ledger'}</div></div>
       </div>
 
+      {/* Six-dimension panel (v2+ passports) */}
+      {d.dimensions && d.dimensions.length > 0 && (
+        <DimensionPanel dims={d.dimensions} />
+      )}
+
+      {/* Legacy breakdown bar chart — shown when score is present (backward compat) */}
       {d.breakdown && (
         <div className="pp-break">
           <div className="pp-break-h">Why this score — every point is legible</div>
