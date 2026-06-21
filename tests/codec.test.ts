@@ -6,6 +6,7 @@ import {
   makePreimageCondition, type TrustTerms,
 } from '../src/xrpl/codec.js';
 import { tierFromScore } from '../src/kya/scorecard.js';
+import type { PassportTier } from '../src/kya/tier.js';
 
 describe('codec', () => {
   it('CRED_TYPE is hex of agent_trust_v1', () => {
@@ -94,6 +95,99 @@ describe('codec', () => {
 
   it('v2 tier derivation is pinned to the scorecard bands', () => {
     expect(tierFromScore(55)).toBe('TIER-2');
+  });
+
+  // ── v3 tests (TASK 8) ────────────────────────────────────────────────────
+  // v3 wire format omits `d` (disposition derived from tier on decode) and
+  // uses `ch` as the single off-chain pointer (content hash doubles as ref).
+  // This keeps the full payload within the 256-hex XLS-70 cap.
+
+  // contentHash in v3 is a 12-hex prefix of the dossier SHA-256 (6 bytes),
+  // chosen so the full wire payload (with ih+sh+op) stays within 256-hex.
+  it('v3 round-trip: encode then decode returns the same object', () => {
+    const t: TrustTerms = {
+      v: 3,
+      tier: 'GOLD',
+      maxTxAmount: '2000',
+      confidence: 87,
+      dimsBitmask: 0b111111,
+      exp: 900000000,
+      contentHash: '23C9FE5AA800',   // 12 hex
+      ih: 'AABBCCDD',
+      sh: '11223344',
+      op: 'DEADBEEF',
+    };
+    const hex = encodeTrustURI(t);
+    const back = decodeTrustURI(hex);
+    expect(back).toEqual(t);
+  });
+
+  it('v3 wire payload uses abbreviated keys', () => {
+    const t: TrustTerms = {
+      v: 3,
+      tier: 'GOLD',
+      maxTxAmount: '2000',
+      confidence: 87,
+      dimsBitmask: 0b111111,
+      exp: 900000000,
+      contentHash: 'ABCD1234ABCD',   // 12 hex
+      ih: 'AABBCCDD',
+      sh: '11223344',
+      op: 'DEADBEEF',
+    };
+    const wire = JSON.parse(fromHex(encodeTrustURI(t)));
+    // keys: v, t, c, dx, m, e, ch, ih, sh, op (no r, no d — derived from tier)
+    expect(Object.keys(wire).sort()).toEqual(['c', 'ch', 'dx', 'e', 'ih', 'm', 'op', 'sh', 't', 'v']);
+  });
+
+  it('v3 tier char: D=DENIED, B=BRONZE, S=SILVER, G=GOLD, P=PLATINUM', () => {
+    const tiers: Array<[PassportTier, string]> = [
+      ['DENIED', 'D'], ['BRONZE', 'B'], ['SILVER', 'S'], ['GOLD', 'G'], ['PLATINUM', 'P'],
+    ];
+    for (const [tier, char] of tiers) {
+      const t: TrustTerms = { v: 3, tier, maxTxAmount: '0', confidence: 0, dimsBitmask: 0, exp: 900000000, contentHash: 'ABCD1234ABCD' };
+      const wire = JSON.parse(fromHex(encodeTrustURI(t)));
+      expect(wire.t).toBe(char);
+      const back = decodeTrustURI(encodeTrustURI(t));
+      expect(back.tier).toBe(tier);
+    }
+  });
+
+  it('v3 payload with all optional fields fits within 256 hex chars', () => {
+    const exp = toRippleEpoch(946684800000) + 30 * 86400;
+    const t: TrustTerms = {
+      v: 3,
+      tier: 'PLATINUM',
+      maxTxAmount: '10000',
+      confidence: 99,
+      dimsBitmask: 0b111111,
+      exp,
+      contentHash: 'ABCD1234ABCD',   // 12 hex
+      ih: 'AABBCCDD',
+      sh: '11223344',
+      op: 'DEADBEEF',
+    };
+    expect(encodeTrustURI(t).length).toBeLessThanOrEqual(256);
+  });
+
+  it('v3 decode returns { v:3, tier:"GOLD", confidence:87, dimsBitmask:63, ... }', () => {
+    const t: TrustTerms = {
+      v: 3, tier: 'GOLD', maxTxAmount: '2000', confidence: 87,
+      dimsBitmask: 0b111111, exp: 900000000, contentHash: 'ABCD1234ABCD',
+    };
+    const back = decodeTrustURI(encodeTrustURI(t));
+    expect(back.v).toBe(3);
+    if (back.v !== 3) throw new Error('type guard');
+    expect(back.tier).toBe('GOLD');
+    expect(back.confidence).toBe(87);
+    expect(back.dimsBitmask).toBe(63);
+  });
+
+  it('existing v1/v2 decoding is unaffected by v3 addition', () => {
+    const v1: TrustTerms = { v: 1, tier: 'TIER-2', maxTxAmount: '100', score: 65, exp: 900000000, ref: '23C9FE5AA800785C' };
+    const v2: TrustTerms = { v: 2, tier: 'TIER-2', maxTxAmount: '100', score: 55, exp: 900000000, ref: 'AAAA', disposition: 'A' };
+    expect(decodeTrustURI(encodeTrustURI(v1)).v).toBe(1);
+    expect(decodeTrustURI(encodeTrustURI(v2)).v).toBe(2);
   });
 });
 
