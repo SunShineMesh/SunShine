@@ -34,6 +34,8 @@ import { attestFiles } from '../agent/attest.js';
 import { runCrossBorderScenario } from '../agent/scenario.js';
 import { readFileSync } from 'node:fs';
 import { rpSignatureHandler, verifyProofHandler } from '../worldid/backend.js';
+import { checkPassportForX402, buildX402Response, type X402Requirements } from '../x402/gate.js';
+import { buildAmlMatcher } from '../kya/aml.js';
 
 const PAYMENTS_PATH = fileURLToPath(new URL('../../.payments.json', import.meta.url));
 const AGENTS_PATH = fileURLToPath(new URL('../../.agents.json', import.meta.url));
@@ -301,6 +303,56 @@ async function main() {
   app.post('/api/worldid/rp-signature', rpSignatureHandler);
   // POST /api/worldid/verify — forwards to developer.world.org/api/v4/verify/{rp_id}.
   app.post('/api/worldid/verify', verifyProofHandler);
+
+  // ── Phase 1.5 — x402 gate demo endpoint ──────────────────────────────────
+  // POST /api/x402/resource — returns 402 with requirements if the agent's
+  // credential is absent, invalid, or AML-flagged; returns 200 on pass.
+  //
+  // Request body: { agentAddr, requestedAmount? }
+  // The resource's requirements are fixed here for the demo.
+  const x402Requirements: X402Requirements = {
+    amount: '50',         // demo ceiling: 50 RLUSD
+    currency: 'RLUSD',
+    credentialIssuer: treasury.address,
+    requiredTier: 'BRONZE',
+    paymentAddress: treasury.address,
+  };
+  const x402AmlMatcher = buildAmlMatcher();
+
+  app.post('/api/x402/resource', async (req, res) => {
+    try {
+      const { agentAddr, requestedAmount } = req.body as { agentAddr?: string; requestedAmount?: string };
+      if (!agentAddr) {
+        const r402 = buildX402Response(x402Requirements);
+        return res.status(402).set(r402.headers).json({ ...r402.body, reason: 'no agent address provided' });
+      }
+
+      // Fetch the on-ledger credential for this agent.
+      const credView = await fetchCredential(c, agentAddr, treasury.address).catch(() => null);
+      const credentialStatus: 'valid' | 'missing' | 'revoked' =
+        !credView ? 'missing' : credView.accepted ? 'valid' : 'missing';
+
+      // AML screen the agent address (the agent's address is the identity being screened).
+      const amlScreening = x402AmlMatcher(agentAddr);
+
+      // Run the x402 gate.
+      const gateResult = await checkPassportForX402({
+        agentAddr,
+        credentialStatus,
+        tierCeiling: x402Requirements.amount,
+        requestedAmount: requestedAmount ?? x402Requirements.amount,
+        amlResult: amlScreening.action,
+      });
+
+      if (!gateResult.allowed) {
+        const r402 = buildX402Response(x402Requirements);
+        return res.status(402).set(r402.headers).json({ ...r402.body, reason: gateResult.reason });
+      }
+
+      // Resource released.
+      res.json({ content: 'resource released', agentAddr, credentialStatus });
+    } catch (e: any) { res.status(500).json({ error: e.message }); }
+  });
 
   // ── Cinematic cross-border scenario — streamed step-by-step over SSE ───
   // Kicks off the full real-testnet arc (KYB → KYA → gate → real LLM risk
