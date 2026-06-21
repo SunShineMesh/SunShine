@@ -382,7 +382,7 @@ export async function runCrossBorderScenario(deps: {
       payer: CAST.operator.name, payerCountry: CAST.operator.country,
       payee: CAST.supplierA.name, payeeCountry: CAST.supplierA.country,
       amount: amountA, currency: 'USD', purpose: 'CNC precision parts — purchase order',
-      tier: 'BRONZE', maxTxAmount: TIER_CEILING.BRONZE,
+      tier: 'BRONZE', maxTxAmount: TIER_CEILING.BRONZE, amlAction: amlA.action,
     });
     // Gate 3 — shared FLEET delegation budget (pure check; spent only on settle).
     const drawA = budgetCheck(budget, amountA, fleetBudget);
@@ -461,7 +461,7 @@ export async function runCrossBorderScenario(deps: {
       payer: CAST.operator.name, payerCountry: CAST.operator.country,
       payee: CAST.supplierB.name, payeeCountry: CAST.supplierB.country,
       amount: amountB, currency: 'USD', purpose: 'Medical device PCB components — verified purchase order PO-2026-0482',
-      tier: 'BRONZE', maxTxAmount: TIER_CEILING.BRONZE,
+      tier: 'BRONZE', maxTxAmount: TIER_CEILING.BRONZE, amlAction: amlB.action,
     });
     const drawB = budgetCheck(budget, amountB, fleetBudget);
 

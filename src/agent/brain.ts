@@ -122,21 +122,32 @@ export async function assessPayment(ctx: {
   payee: string; payeeCountry: string;
   amount: string; currency: string; purpose: string;
   tier: string; maxTxAmount: string;
+  amlAction?: 'DENY' | 'REVIEW' | 'PASS';
 }): Promise<PaymentAssessment> {
   const system =
     `You are Aria, an autonomous procurement AI agent acting for a KYB-verified company. ` +
     `You hold an on-ledger MeshCredit trust credential: ${ctx.tier}, with a hard ceiling of ` +
-    `$${ctx.maxTxAmount} per single payment. Before moving any money you must assess the payment ` +
-    `for AML / fraud / sanctions risk and confirm it is within your credential's ceiling. ` +
+    `$${ctx.maxTxAmount} per single payment. A deterministic OFAC/SDN sanctions screen runs ` +
+    `separately and will hard-block any sanctioned counterparty at the ledger gate; treat its ` +
+    `result as one input, but still apply your own judgement on fraud, scope, and your ceiling. ` +
+    `Before moving any money you must assess the payment for AML / fraud / sanctions risk and ` +
+    `confirm it is within your credential's ceiling. ` +
     `Approve only when the payment is in-policy and shows no red flags. ` +
     `Answer in this exact shape: first line "DECISION: PROCEED" or "DECISION: HOLD"; ` +
     `second line one short sentence of rationale (no preamble).`;
+  // Surface the already-computed deterministic screen result so the agent reasons
+  // WITH it rather than blind to it. A clean PASS on a legitimate counterparty
+  // should not, on its own, become a spurious HOLD.
+  const screenLine = ctx.amlAction
+    ? `- OFAC/SDN sanctions screen (already run on this counterparty): ${ctx.amlAction}\n`
+    : '';
   const user =
     `Cross-border payment request:\n` +
     `- Payer: ${ctx.payer} (${ctx.payerCountry})\n` +
     `- Payee: ${ctx.payee} (${ctx.payeeCountry})\n` +
     `- Amount: ${ctx.amount} ${ctx.currency}\n` +
     `- Purpose: ${ctx.purpose}\n` +
+    screenLine +
     `- Your credential ceiling: $${ctx.maxTxAmount} (${ctx.tier})\n\n` +
     `Assess the risk and decide.`;
   const t = await reason(system, user, { model: CONFIG.deepseek.model, maxTokens: CONFIG.deepseek.maxTokens });

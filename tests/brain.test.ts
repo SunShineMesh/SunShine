@@ -62,3 +62,37 @@ describe('assessPayment — FIX 2 structural guard', () => {
     expect(decision).toBe('PROCEED');
   });
 });
+
+describe('assessPayment — informed by the deterministic OFAC screen result', () => {
+  it('feeds the already-computed sanctions screen result into the prompt (informed reasoning)', () => {
+    // A real compliance agent reasons WITH the deterministic OFAC/SDN screen result,
+    // not blind to it (assessCounterparty already does this for the sanctioned case).
+    // Surfacing the PASS on a clean counterparty makes the agent's risk call both
+    // more realistic and less prone to a spurious HOLD that would flip the headline
+    // approved case to DENIED in a live run. The line is distinctive to assessPayment.
+    expect(brainSource).toMatch(/screen \(already run on this counterparty\)/);
+    expect(brainSource).toMatch(/ctx\.amlAction/);
+  });
+
+  it('accepts an optional amlAction in its context and still returns a well-formed assessment', async () => {
+    const result = await assessPayment({
+      payer: 'Novartis AG', payerCountry: 'Switzerland',
+      payee: 'Lagos Precision Parts', payeeCountry: 'Nigeria',
+      amount: '50', currency: 'USD', purpose: 'CNC precision parts',
+      tier: 'BRONZE', maxTxAmount: '100', amlAction: 'PASS',
+    });
+    expect(['PROCEED', 'HOLD']).toContain(result.decision);
+    expect(typeof result.rationale).toBe('string');
+    expect(typeof result.fallback).toBe('boolean');
+  });
+
+  it('amlAction is optional — omitting it keeps the prior call signature working', async () => {
+    const result = await assessPayment({
+      payer: 'Novartis AG', payerCountry: 'Switzerland',
+      payee: 'Taipei Tech Components', payeeCountry: 'Taiwan',
+      amount: '60', currency: 'USD', purpose: 'PCB components',
+      tier: 'BRONZE', maxTxAmount: '100',
+    });
+    expect(['PROCEED', 'HOLD']).toContain(result.decision);
+  });
+});

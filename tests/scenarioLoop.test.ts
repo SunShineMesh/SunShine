@@ -162,6 +162,15 @@ describe('scenario v3 — case-based structure (source guards)', () => {
     expect(scenarioSrc).toMatch(/reasoning:\s*assessB\.reasoning/);
   });
 
+  it('feeds the per-case AML screen result into the agent risk assessment (informed reasoning)', () => {
+    // The deterministic OFAC screen runs BEFORE the LLM risk call; its result must
+    // be passed INTO the assessPayment call so the agent reasons with it, not blind
+    // to it. Scoped to the assessPayment({...}) object literal so it can't be
+    // satisfied by the pre-existing casePasses({ amlAction: ... }) or data emits.
+    expect(scenarioSrc).toMatch(/assessPayment\(\{[^}]*amlAction:\s*amlA\.action/);
+    expect(scenarioSrc).toMatch(/assessPayment\(\{[^}]*amlAction:\s*amlB\.action/);
+  });
+
   it('the per-case budget gate enforces the advertised FLEET budget, not the big KYB cap', () => {
     expect(scenarioSrc).toMatch(/budgetCheck\(budget,\s*amountA,\s*fleetBudget\)/);
     expect(scenarioSrc).toMatch(/budgetCheck\(budget,\s*amountB,\s*fleetBudget\)/);
