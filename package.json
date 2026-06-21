@@ -1,0 +1,30 @@
+{
+  "name": "meshcredit",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "MeshCredit — portable on-chain agent credit identity on XRPL",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:testnet": "vitest run --config vitest.testnet.config.ts",
+    "typecheck": "tsc --noEmit",
+    "server": "tsx src/treasury/server.ts",
+    "demo": "tsx src/agent/demoUC1.ts",
+    "smoke:rlusd-gate": "tsx smoke-rlusd-gate.ts",
+    "setup:stablecoin": "tsx src/xrpl/setupStablecoin.ts"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "xrpl": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.14.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
+  }
+}

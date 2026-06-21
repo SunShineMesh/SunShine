@@ -1,0 +1,23 @@
+node_modules/
+dist/
+.env
+# local runtime state & testnet SEEDS — DO NOT COMMIT
+.wallets.json
+.agents.json
+.dossiers.json
+.payments.json
+.loans.json
+web/node_modules/
+web/dist/
+*.log
+.DS_Store
+# SDD scratch (briefs, reports, review packages, progress ledger)
+.superpowers/
+# dev-only artifacts — kept locally, excluded from the clean public repo
+docs/
+legacy/
+spike-*.ts
+smoke-pivot.ts
+smoke-tierb.ts
+smoke.mjs
+setup-demo-wallet.ts
