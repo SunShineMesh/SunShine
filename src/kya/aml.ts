@@ -48,6 +48,10 @@ export type AmlMatcher = (name: string) => ScreeningResult;
 
 const DENY_THRESHOLD = 0.88;
 const REVIEW_THRESHOLD = 0.80;
+// A query token and an SDN token "align" when their Jaro-Winkler similarity clears
+// this bar. Used to compute token coverage, NOT the final score band — it only
+// gates how much the concatenation score is trusted.
+const TOKEN_MATCH_THRESHOLD = 0.85;
 
 const HONORIFICS = new Set([
   'mr', 'mrs', 'ms', 'dr', 'al', 'el', 'von', 'van', 'de', 'bin', 'bint',
@@ -132,6 +136,49 @@ function jaroWinkler(s1: string, s2: string): number {
 function compareName(a: string, b: string): number {
   const [sortedA, sortedB] = tokenSet(a, b);
   return jaroWinkler(sortedA, sortedB);
+}
+
+/**
+ * How much of `from` is actually accounted for by `to`, token by token — the
+ * dimension the concatenated-string Jaro-Winkler is blind to. For each `from`
+ * token we take its best partner in `to`; if that partner clears the alignment
+ * bar we credit it by the STRENGTH of the alignment, not a flat 1. Quality
+ * weighting (rather than a binary count) is what closes the single-token hole:
+ * a lone SDN word like "companion" that only fuzzy-matches the generic query
+ * word "components" (JW ≈ 0.88) would otherwise be 1-of-1 = full coverage and
+ * leave the 0.84 concatenation score untouched; weighted, it contributes 0.88,
+ * pulling the final score safely below the REVIEW band. An EXACT match still
+ * scores 1.0, so genuine hits — full names, aliases, padded sanctioned names —
+ * keep coverage 1.0 in at least one direction and are never downgraded.
+ */
+function tokenCoverage(from: string[], to: string[]): number {
+  if (from.length === 0 || to.length === 0) return 0;
+  let sum = 0;
+  for (const f of from) {
+    let best = 0;
+    for (const t of to) {
+      const s = jaroWinkler(f, t);
+      if (s > best) best = s;
+    }
+    if (best >= TOKEN_MATCH_THRESHOLD) sum += best;
+  }
+  return sum / from.length;
+}
+
+/**
+ * The trust we place in a concatenation score, given how well the two token sets
+ * actually cover each other. We take the BEST of the two directions: a genuine
+ * match — an exact name, an alias, or a sanctioned name padded with extra words —
+ * has at least one side fully covered (factor 1.0), so its score is unchanged. A
+ * partial/junk overlap leaves both sides poorly covered and is downgraded. The
+ * factor is in [0,1], so it can only LOWER a score, never raise one: it cannot
+ * manufacture a false negative for a name that is genuinely covered.
+ */
+function coverageFactor(queryTokens: string[], nameTokens: string[]): number {
+  return Math.max(
+    tokenCoverage(queryTokens, nameTokens),
+    tokenCoverage(nameTokens, queryTokens),
+  );
 }
 
 // ─── CSV / fixture parsing ───────────────────────────────────────────────────
@@ -281,23 +328,29 @@ export function buildAmlMatcher(csvPath?: string): AmlMatcher {
     }
   }
 
-  // Pre-compute normalised keys for every entry + alias
-  const index: Array<{ normName: string; entry: SdnEntry }> = [];
+  // Pre-compute normalised keys (and their token arrays) for every entry + alias
+  const index: Array<{ normName: string; tokens: string[]; entry: SdnEntry }> = [];
+  const addKey = (normName: string, entry: SdnEntry) => {
+    if (!normName) return;
+    index.push({ normName, tokens: normName.split(' ').filter(Boolean), entry });
+  };
   for (const entry of entries) {
-    index.push({ normName: normalize(entry.name), entry });
-    for (const alias of entry.aliases) {
-      if (alias) index.push({ normName: normalize(alias), entry });
-    }
+    addKey(normalize(entry.name), entry);
+    for (const alias of entry.aliases) addKey(normalize(alias), entry);
   }
 
   return (name: string): ScreeningResult => {
     const normQuery = normalize(name);
+    const queryTokens = normQuery.split(' ').filter(Boolean);
     let bestScore = 0;
     let bestNorm = '';
     let bestEntry: SdnEntry | undefined;
 
-    for (const { normName, entry } of index) {
-      const sim = compareName(normQuery, normName);
+    for (const { normName, tokens, entry } of index) {
+      // Concatenation similarity, then discounted by how well the tokens actually
+      // cover each other — so a high score from incidental character overlap on a
+      // legitimate multi-word name (e.g. "Taipei Tech Components") is not trusted.
+      const sim = compareName(normQuery, normName) * coverageFactor(queryTokens, tokens);
       if (sim > bestScore) {
         bestScore = sim;
         bestNorm = normName;

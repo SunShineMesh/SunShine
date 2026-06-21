@@ -1,0 +1,42 @@
+[
+  {
+    "id": "NK-2369Vca9iPnQoaUJDAHTaB",
+    "schema": "Organization",
+    "name": "Star Dragon Corporation Limited",
+    "aliases": ["星龍興業有限公司"],
+    "birth_date": "",
+    "countries": ["cn", "hk"],
+    "program_ids": "US-DRC",
+    "dataset": "US OFAC SDN — real entry, the demo's sanctioned counterparty (full-match anchor)"
+  },
+  {
+    "id": "fp-decoy-001",
+    "schema": "Organization",
+    "name": "Component T",
+    "aliases": [],
+    "birth_date": "",
+    "countries": ["xx"],
+    "program_ids": "",
+    "dataset": "decoy reproducing the real CSV false positive: a short generic-token SDN string that concat-Jaro-Winkler over-matched against 'Taipei Tech Components' at 0.90"
+  },
+  {
+    "id": "fp-decoy-002",
+    "schema": "Organization",
+    "name": "Karpis AG",
+    "aliases": [],
+    "birth_date": "",
+    "countries": ["xx"],
+    "program_ids": "",
+    "dataset": "decoy reproducing the real CSV false positive: a 2-token SDN sharing only the generic suffix 'AG' over-matched against the operator 'Novartis AG' at 0.86 (REVIEW)"
+  },
+  {
+    "id": "fp-decoy-003",
+    "schema": "Organization",
+    "name": "Companion",
+    "aliases": [],
+    "birth_date": "",
+    "countries": ["xx"],
+    "program_ids": "",
+    "dataset": "decoy reproducing the real CSV single-token false positive: 'companion' fuzzy-matches the generic word 'components', and as a lone token gets full binary coverage — must be downgraded by quality-weighted coverage so 'Taipei Tech Components' PASSes"
+  }
+]
