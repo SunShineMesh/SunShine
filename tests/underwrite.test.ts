@@ -283,4 +283,54 @@ describe('underwrite', () => {
     expect(ids).toContain('D5');
     expect(ids).toContain('D6');
   });
+
+  // ── FIX 4: real evidence hashes (no placeholders) ─────────────────────────
+
+  it('fix4: D3 evidenceHash equals attestation skillHashFull (not a placeholder)', async () => {
+    // FIX 4: D3 must use the real skillHashFull from the attestation, not 'b'.repeat(64).
+    const att = attest('harness-content', 'skill-content');
+    const r = await underwrite(noChain, 'rAgent', demoOffChain, {
+      now: NOW, version: 3, attestation: att,
+    });
+    const d3 = r.dossier.dimensions?.find(d => d.id === 'D3');
+    expect(d3).toBeDefined();
+    // Must equal the real skillHashFull, not a placeholder like 'b'.repeat(64)
+    expect(d3!.evidenceHash).toBe(att.skillHashFull);
+    expect(d3!.evidenceHash).not.toBe('b'.repeat(64));
+    expect(d3!.evidenceHash.length).toBe(64); // SHA-256 hex
+  });
+
+  it('fix4: D3 evidenceHash is empty string when no attestation is provided', async () => {
+    // Without an attestation, D3 evidenceHash must be empty (not a fabricated placeholder).
+    const r = await underwrite(noChain, 'rAgent', demoOffChain, {
+      now: NOW, version: 3,
+      // no attestation supplied
+    });
+    const d3 = r.dossier.dimensions?.find(d => d.id === 'D3');
+    expect(d3).toBeDefined();
+    expect(d3!.evidenceHash).toBe('');
+    expect(d3!.evidenceHash).not.toBe('b'.repeat(64));
+  });
+
+  it('fix4: D2 evidenceHash is empty string (World ID proof pending — simulator)', async () => {
+    // FIX 4: D2 evidenceHash must NOT be the fabricated 'a'.repeat(64) placeholder.
+    // It must be empty when no real nullifier is available (boolean signal only).
+    const r = await underwrite(noChain, 'rAgent', { ...demoOffChain, worldId: true }, {
+      now: NOW, version: 3,
+    });
+    const d2 = r.dossier.dimensions?.find(d => d.id === 'D2');
+    expect(d2).toBeDefined();
+    expect(d2!.evidenceHash).toBe('');
+    expect(d2!.evidenceHash).not.toBe('a'.repeat(64));
+  });
+
+  it('fix4: D3 evidenceRef equals attestation sh prefix', async () => {
+    const att = attest('harness-content', 'skill-content');
+    const r = await underwrite(noChain, 'rAgent', demoOffChain, {
+      now: NOW, version: 3, attestation: att,
+    });
+    const d3 = r.dossier.dimensions?.find(d => d.id === 'D3');
+    expect(d3).toBeDefined();
+    expect(d3!.evidenceRef).toBe(att.sh);
+  });
 });

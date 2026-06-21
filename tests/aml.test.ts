@@ -134,3 +134,22 @@ describe('fixture loading', () => {
     expect(r.action).toBe('DENY');
   });
 });
+
+describe('scenario AML target — Star Dragon Corporation Limited', () => {
+  it("'Star Dragon Corporation Limited' → DENY on the fixture (score >= 0.88)", () => {
+    // FIX 1: Star Dragon must be in the fixture so that denial_aml cannot silently pass
+    // when SANCTIONS_FIXTURE=true (which vitest.config.ts forces). Real entry from
+    // data/sanctions_snapshot_20260621.csv — OFAC SDN Organization, schema=Organization.
+    const result: ScreeningResult = matcher('Star Dragon Corporation Limited');
+    expect(result.action).toBe('DENY');
+    expect(result.score).toBeGreaterThanOrEqual(0.88);
+    expect(result.matchedName).toBeTruthy();
+    expect(result.hit).toBe(true);
+  });
+
+  it("'star dragon corporation limited' (lower case) → DENY on the fixture", () => {
+    const result = matcher('star dragon corporation limited');
+    expect(result.action).toBe('DENY');
+    expect(result.score).toBeGreaterThanOrEqual(0.88);
+  });
+});

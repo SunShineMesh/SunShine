@@ -224,8 +224,14 @@ export async function runCrossBorderScenario(deps: {
       } });
 
     // ── STEP 4 · kya_thick — thick-file contrast (pre-seeded GOLD agent) ─────
-    // Read from THICK_AGENT_ADDR env or fallback to a synthetic display.
-    const thickAddr = process.env.THICK_AGENT_ADDR ?? agentA.address;
+    // Read from THICK_AGENT_ADDR env (set from .thick-agent.json by seed script).
+    // The signals (35 settlements, 90-day window) were seeded on-chain by the seed script;
+    // in this demo path we display those seeded values without re-fetching live on-chain data.
+    // demoSynthetic=false when THICK_AGENT_ADDR is present (real wallet, seeded signals);
+    // demoSynthetic=true when falling back to a freshly-funded wallet (no on-chain history).
+    const thickAddrEnv = process.env.THICK_AGENT_ADDR;
+    const thickAddr = thickAddrEnv ?? agentA.address;
+    const thickIsReal = !!thickAddrEnv;
     const thickSettlements = 35;
     const thickWindowDays = 90;
     const thickConf = computeConfidence({ settlements: thickSettlements, windowDays: thickWindowDays, daysSinceLastSettlement: 0 });
@@ -241,7 +247,10 @@ export async function runCrossBorderScenario(deps: {
     patch('kya_thick', { status: 'done', data: {
       agent: thickAddr, tier: thickTier.tier, confidence: thickConf,
       settlements: thickSettlements, windowDays: thickWindowDays, ceiling: thickTier.ceiling,
-      note: process.env.THICK_AGENT_ADDR ? 'real pre-seeded wallet' : 'synthetic display (run seed-thick-agent.ts for real wallet)',
+      demoSynthetic: !thickIsReal,
+      note: thickIsReal
+        ? 'real pre-seeded wallet (signals seeded by scripts/seed-thick-agent.ts)'
+        : 'synthetic display — THICK_AGENT_ADDR not set (run seed-thick-agent.ts for real wallet)',
     } });
 
     // ── STEP 5 · mandate — principal counter-signs agentA's key (D5) ────────
@@ -266,8 +275,8 @@ export async function runCrossBorderScenario(deps: {
       `The operator's total delegation budget is $${maxDelegatedSpend}. ` +
       `Summarise briefly (2-3 sentences) how you will disburse across two suppliers ` +
       `given those constraints.`,
-      `Suppliers: Lagos Precision Parts ($50 for CNC parts) and Taipei Tech Components ($60 for semiconductors). ` +
-      `Both are within your $100 ceiling individually. How will you proceed?`,
+      `Suppliers: Lagos Precision Parts ($50 for CNC parts for lab equipment) and Taipei Tech Components ($60 for PCB components for medical devices). ` +
+      `Novartis manufactures both lab equipment and medical devices, so both procurement lines are in-scope. Both amounts are within your $100 ceiling individually. How will you proceed?`,
       { model: CONFIG.deepseek.flashModel, maxTokens: 700 },
     );
     patch('reason', { status: 'done', data: {
@@ -365,7 +374,7 @@ export async function runCrossBorderScenario(deps: {
     const assessB = await assessPayment({
       payer: CAST.operator.name, payerCountry: CAST.operator.country,
       payee: CAST.supplierB.name, payeeCountry: CAST.supplierB.country,
-      amount: amountB, currency: 'USD', purpose: 'Semiconductor components — purchase order',
+      amount: amountB, currency: 'USD', purpose: 'Medical device PCB components — verified purchase order PO-2026-0482',
       tier: 'BRONZE', maxTxAmount: TIER_CEILING.BRONZE,
     });
 
@@ -399,41 +408,43 @@ export async function runCrossBorderScenario(deps: {
         } });
     }
 
-    // ── STEP 10 · denial_budget — agentB attempts $500 → BRONZE sub-cap DENIES
-    // agentB is a BRONZE-tier agent. The per-agent sub-cap is the BRONZE tier ceiling ($100).
-    // After $50 (settle_a) + $60 (settle_b) = $110 already allocated, any further
-    // request — and certainly $500 — exceeds the $100 sub-cap. The check is against the
-    // agent's BRONZE ceiling, not the operator-level maxDelegatedSpend ($50,000).
-    const bronzeSubCap = TIER_CEILING.BRONZE; // $100 — agentB is BRONZE tier
+    // ── STEP 10 · denial_budget — agentB attempts $500 → OPERATOR AGGREGATE budget DENIES
+    // The operator delegated a $150 aggregate task budget to this agent fleet for this run
+    // (distinct from Novartis's full KYB authority of $${maxDelegatedSpend}). After
+    // settle_a ($50) + settle_b ($60) = $110 allocated, only $40 remains. A $500 request
+    // pushes projected spend to $610, which exceeds the $150 demo fleet budget → DENIED.
+    const demoDelegationBudget = '150'; // operator's explicit fleet budget for this demo run
     start({ id: 'denial_budget', phase: 'denial', actor: CAST.agentB.name,
-      title: `Denial #2 — delegation sub-cap ($500 > BRONZE ceiling $${bronzeSubCap})`,
-      body: `${CAST.agentB.flag} agentB (BRONZE) attempts a $500 payment. delegationCapCheck() denies because allocated ($${budget.allocated}) + $500 > agent sub-cap ($${bronzeSubCap}).` });
+      title: `Denial #2 — operator delegation budget (allocated $${budget.allocated} + $500 > $${demoDelegationBudget} fleet budget)`,
+      body: `${CAST.agentB.flag} agentB attempts a $500 payment. The operator's $${demoDelegationBudget} fleet budget for this run has $${budget.allocated} allocated ($40 remaining). delegationCapCheck() denies: projected $${Number(budget.allocated) + 500} > fleet budget $${demoDelegationBudget}.` });
 
     const bigAmount = '500';
     const capResult = delegationCapCheck({
-      maxDelegatedSpend: bronzeSubCap,  // agent sub-cap: BRONZE ceiling
+      maxDelegatedSpend: demoDelegationBudget,  // operator's per-run fleet delegation budget
       allocatedTotal: budget.allocated,
       requestedAllocation: bigAmount,
     });
 
+    const remaining = Math.max(0, Number(demoDelegationBudget) - Number(budget.allocated));
     // Model reacts to the budget denial.
     const budgetDenialReact = await reason(
-      `You are Bravo, an autonomous logistics AI agent with a BRONZE credential (ceiling $${bronzeSubCap}). The shared budget already has $${budget.allocated} allocated.`,
-      `You attempted a $${bigAmount} payment but your BRONZE delegation sub-cap is $${bronzeSubCap} and $${budget.allocated} is already allocated. Briefly explain your adaptation strategy. One sentence.`,
+      `You are Bravo, an autonomous logistics AI agent with a BRONZE credential. The operator delegated a $${demoDelegationBudget} fleet budget for this run. The fleet has already allocated $${budget.allocated} ($${remaining} remaining).`,
+      `You attempted a $${bigAmount} payment but the operator's fleet budget is $${demoDelegationBudget}, $${budget.allocated} is already allocated (only $${remaining} remaining). Briefly explain your adaptation strategy. One sentence.`,
       { model: CONFIG.deepseek.flashModel, maxTokens: 700 },
     );
     patch('denial_budget', { status: 'denied', data: {
-      requestedAmount: bigAmount, bronzeSubCap, allocatedTotal: budget.allocated,
-      remaining: String(Math.max(0, Number(bronzeSubCap) - Number(budget.allocated))),
+      requestedAmount: bigAmount, demoDelegationBudget, allocatedTotal: budget.allocated,
+      remaining: String(remaining),
+      projectedTotal: String(Number(budget.allocated) + Number(bigAmount)),
       denied: !capResult.allowed, reason: capResult.reason ?? 'cap check passed (unexpected)',
       agentReaction: budgetDenialReact.content, model: budgetDenialReact.model,
       ms: budgetDenialReact.ms, fallback: budgetDenialReact.fallback,
     } });
 
-    // ── STEP 11 · denial_aml — payment to Viktor Bout → D6 gate denies ──────
+    // ── STEP 11 · denial_aml — payment to Star Dragon Corporation Limited → D6 gate denies ──────
     start({ id: 'denial_aml', phase: 'denial', actor: CAST.agentA.name,
       title: `Denial #3 — AML gate (${CAST.amlTarget.name})`,
-      body: `${CAST.amlTarget.flag} agentA attempts a payment to Viktor Bout. FIRST, the agent reasons about the SDN flag (real LLM call). THEN the D6 hard gate blocks submission.` });
+      body: `${CAST.amlTarget.flag} agentA attempts a payment to ${CAST.amlTarget.name}. FIRST, the agent reasons about the SDN flag (real LLM call). THEN the D6 hard gate blocks submission.` });
 
     const amlScreen = screenName(amlMatcher, CAST.amlTarget.name);
 

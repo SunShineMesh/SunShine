@@ -41,8 +41,10 @@ function buildV3Dimensions(signals: Signals, opts: {
   d5Mandate?: MandateRecord | boolean;
   settlements?: number;
   amlResult?: ScreeningResult;
+  attestation?: Attestation;
 }): DimensionRecord[] {
   const now = opts.now;
+  const att = opts.attestation;
 
   // D1 — Principal identity: operatorBacked or worldId implies some identity check
   const d1Pass = !!(signals.operatorBacked || signals.worldId);
@@ -56,23 +58,27 @@ function buildV3Dimensions(signals: Signals, opts: {
   });
 
   // D2 — Human accountability (World ID)
+  // evidenceHash is the World ID nullifier when available; empty when only a boolean signal
+  // is present (simulator/test path). A real nullifier is injected via the worldid backend
+  // flow and stored in the nullifier store — it is not accessible from the boolean signal alone.
   const d2Pass = !!signals.worldId;
   const d2: DimensionRecord = buildDimensionRecord('D2', {
     status: d2Pass ? 'PASS' : 'PENDING',
     issuer: 'World ID',
     evidenceRef: d2Pass ? 'worldid-claim' : 'none',
-    evidenceHash: d2Pass ? 'a'.repeat(64) : '0'.repeat(64),
-    details: { worldId: d2Pass },
+    evidenceHash: '',  // World ID proof pending (simulator) — real nullifier set by worldid backend
+    details: { worldId: d2Pass, note: d2Pass ? 'World ID proof pending (simulator)' : 'not verified' },
     checkedAt: now,
   });
 
   // D3 — Code provenance (runtimeStable = hash provided and matches)
+  // Use the real skillHashFull from the attestation when available; empty otherwise.
   const d3Pass = !!signals.runtimeStable;
   const d3: DimensionRecord = buildDimensionRecord('D3', {
     status: d3Pass ? 'PASS' : 'FAIL',
     issuer: 'Runtime Attestation',
-    evidenceRef: d3Pass ? 'runtime-hash' : 'none',
-    evidenceHash: d3Pass ? 'b'.repeat(64) : '0'.repeat(64),
+    evidenceRef: att?.sh ?? 'none',
+    evidenceHash: att?.skillHashFull ?? '',
     details: { runtimeStable: d3Pass, transcriptCoherent: !!signals.transcriptCoherent },
     checkedAt: now,
   });
@@ -189,7 +195,7 @@ export async function underwrite(
   if (resolvedAmlResult?.action === 'DENY') {
     const screening = { sanctions: 'hit' as const, pep: 'clear' as const, provider: 'opensanctions' };
     if (version === 3) {
-      const dims = buildV3Dimensions(signals, { now, d5Mandate: opts.d5Mandate, settlements: opts.settlements, amlResult: resolvedAmlResult });
+      const dims = buildV3Dimensions(signals, { now, d5Mandate: opts.d5Mandate, settlements: opts.settlements, amlResult: resolvedAmlResult, attestation: att });
       const mask = dimsBitmask(dims);
       const dossier = buildDossier({
         agentAddr,
@@ -246,7 +252,7 @@ export async function underwrite(
     // ── v3 path: tier+confidence engine ───────────────────────────────────────
     // (AML DENY already handled above; only non-DENY results reach here)
 
-    const dims = buildV3Dimensions(signals, { now, d5Mandate: opts.d5Mandate, settlements: opts.settlements, amlResult: resolvedAmlResult });
+    const dims = buildV3Dimensions(signals, { now, d5Mandate: opts.d5Mandate, settlements: opts.settlements, amlResult: resolvedAmlResult, attestation: att });
     const mask = dimsBitmask(dims);
 
     const settlements = opts.settlements ?? signals.rlusdPayments ?? 0;

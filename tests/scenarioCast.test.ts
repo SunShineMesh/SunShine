@@ -67,24 +67,52 @@ describe('runCrossBorderScenario — export contract', () => {
 });
 
 describe('denial_budget — delegation cap BITES', () => {
-  // The denial_budget step must actually deny. The scenario uses the BRONZE tier ceiling
-  // ($100) as the local sub-cap for agentB (a BRONZE-tier agent). After settle_a ($50)
-  // and settle_b ($60), the shared budget allocated is $110 which already exceeds the
-  // BRONZE ceiling ($100). A $500 request must be denied by delegationCapCheck against
-  // the BRONZE sub-cap — NOT the operator-level maxDelegatedSpend ($50 000).
-  it('$500 request is denied when sub-cap is BRONZE ceiling ($100)', () => {
+  // The denial_budget step demonstrates the OPERATOR AGGREGATE delegation budget biting.
+  // The operator delegates a $150 fleet budget for this run (demoDelegationBudget).
+  // After settle_a ($50) + settle_b ($60) = $110 allocated, only $40 remains.
+  // A $500 request is denied: projected $610 > fleet budget $150.
+  // Numbers must be self-consistent: $50 + $60 = $110 allocated, $150 - $110 = $40 remaining.
+  it('$500 request is denied when fleet budget is $150 and $110 is already allocated', () => {
+    const demoDelegationBudget = '150';
     const result = delegationCapCheck({
-      maxDelegatedSpend: TIER_CEILING.BRONZE, // sub-cap = $100
-      allocatedTotal: '110',                  // already over the BRONZE ceiling
-      requestedAllocation: '500',
+      maxDelegatedSpend: demoDelegationBudget, // operator's per-run fleet budget
+      allocatedTotal: '110',                   // $50 (settle_a) + $60 (settle_b) = $110
+      requestedAllocation: '500',              // projected $610 > $150 → DENIED
     });
     expect(result.allowed).toBe(false);
     expect(result.reason).toBeDefined();
   });
 
-  it('$500 request passes when cap is operator-level maxDelegatedSpend ($50000) — confirming the bug', () => {
-    // This test documents WHY the original code was wrong: using $50000 as the cap
-    // makes $500 pass, so it must NOT be used for the denial_budget sub-cap check.
+  it('numbers are self-consistent: $110 allocated = $50 + $60 exactly', () => {
+    // settle_a draws $50, settle_b draws $60; aggregate must be $110.
+    expect(50 + 60).toBe(110);
+    // remaining = $150 - $110 = $40
+    expect(150 - 110).toBe(40);
+    // projected = $110 + $500 = $610 > $150
+    expect(110 + 500).toBe(610);
+    expect(610 > 150).toBe(true);
+  });
+
+  it('settle_a ($50) alone does NOT exceed the $150 fleet budget', () => {
+    const result = delegationCapCheck({
+      maxDelegatedSpend: '150',
+      allocatedTotal: '0',
+      requestedAllocation: '50',
+    });
+    expect(result.allowed).toBe(true);
+  });
+
+  it('settle_b ($60) with $50 already allocated does NOT exceed the $150 fleet budget', () => {
+    const result = delegationCapCheck({
+      maxDelegatedSpend: '150',
+      allocatedTotal: '50',
+      requestedAllocation: '60',
+    });
+    expect(result.allowed).toBe(true);
+  });
+
+  it('$500 request passes when cap is operator-level maxDelegatedSpend ($50000)', () => {
+    // Confirms the settle legs use the full KYB operator cap (not the demo fleet budget).
     const result = delegationCapCheck({
       maxDelegatedSpend: '50000',
       allocatedTotal: '110',
@@ -95,12 +123,7 @@ describe('denial_budget — delegation cap BITES', () => {
 
   it('drawBudget should use actual maxDelegatedSpend, not hardcoded GOLD ceiling', () => {
     // The GOLD ceiling ($2000) is an agent-tier ceiling, not the operator KYB ceiling.
-    // After fix, drawBudget receives maxDelegatedSpend from kybScore (could be $50000
-    // for BTIER-4). The denial_budget check uses the agent sub-cap (BRONZE = $100).
-    // Verify: TIER_CEILING.GOLD !== the operator maxDelegatedSpend for BTIER-4.
     expect(TIER_CEILING.GOLD).toBe('2000');
-    // BTIER-4 maxDelegatedSpend is $50,000 — different from GOLD ceiling.
-    // The fix: pass the real maxDelegatedSpend to drawBudget, not TIER_CEILING.GOLD.
     const operatorBtier4Cap = '50000';
     expect(operatorBtier4Cap).not.toBe(TIER_CEILING.GOLD);
   });

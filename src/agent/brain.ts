@@ -140,10 +140,10 @@ export async function assessPayment(ctx: {
     `- Your credential ceiling: $${ctx.maxTxAmount} (${ctx.tier})\n\n` +
     `Assess the risk and decide.`;
   const t = await reason(system, user, { model: CONFIG.deepseek.model, maxTokens: 900 });
-  const decision: 'PROCEED' | 'HOLD' = /DECISION:\s*HOLD/i.test(t.content) ? 'HOLD' : 'PROCEED';
+  const decision: 'PROCEED' | 'HOLD' = t.fallback || /DECISION:\s*HOLD/i.test(t.content) ? 'HOLD' : 'PROCEED';
   const rationale =
     t.content.replace(/^.*DECISION:\s*(PROCEED|HOLD)\s*/is, '').replace(/^[\s\-—:.]+/, '').trim()
     || t.content.trim()
-    || (t.fallback ? 'LLM unavailable — defaulting to in-policy PROCEED for amounts within the ceiling.' : '');
+    || (t.fallback ? 'LLM unavailable — holding payment (fail-safe).' : '');
   return { decision, rationale, reasoning: t.reasoning, ms: t.ms, model: t.model, fallback: t.fallback };
 }

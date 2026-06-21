@@ -76,5 +76,23 @@
     "emails": "",
     "program_ids": "",
     "dataset": "fixture-only (not a real SDN entry — included to pad the index for realism)"
+  },
+  {
+    "id": "NK-2369Vca9iPnQoaUJDAHTaB",
+    "schema": "Organization",
+    "name": "Star Dragon Corporation Limited",
+    "aliases": ["星龍興業有限公司"],
+    "birth_date": "",
+    "countries": ["cn", "hk"],
+    "addresses": ["Room 1510, Shatin Galleria, 18-24 Shan Mei Street, Fotan, New Territories, Hong Kong", "Room 810, 8/F., Nan Fung Commercial Centre, 19 Lam Lok Street, Hong Kong"],
+    "identifiers": "1237860;39369904",
+    "sanctions": "DRCONGO - Executive Order 13413 (DRC)",
+    "phones": "",
+    "emails": "",
+    "program_ids": "US-DRC",
+    "dataset": "US OFAC Specially Designated Nationals (SDN) List",
+    "first_seen": "2025-08-12T20:10:01",
+    "last_seen": "2026-06-21T04:10:01",
+    "last_change": "2026-01-26T16:10:01"
   }
 ]
