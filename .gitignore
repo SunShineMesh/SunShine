@@ -29,3 +29,6 @@ setup-demo-wallet.ts
 data/*.csv
 # Runtime-generated World ID nullifier store (replay prevention log)
 data/worldid-nullifiers.json
+# Thick-file agent wallet (pre-seeded by scripts/seed-thick-agent.ts)
+# Contains a testnet seed — never commit.
+.thick-agent.json

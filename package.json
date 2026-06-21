@@ -12,7 +12,8 @@
     "server": "tsx src/treasury/server.ts",
     "demo": "tsx src/agent/demoUC1.ts",
     "smoke:rlusd-gate": "tsx smoke-rlusd-gate.ts",
-    "setup:stablecoin": "tsx src/xrpl/setupStablecoin.ts"
+    "setup:stablecoin": "tsx src/xrpl/setupStablecoin.ts",
+    "setup:thick-agent": "tsx scripts/seed-thick-agent.ts"
   },
   "dependencies": {
     "@worldcoin/idkit-core": "^4.1.8",
