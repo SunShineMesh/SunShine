@@ -49,8 +49,10 @@ describe('CAST — scenario cast object', () => {
     expect(CAST.supplierB.country).toBe('Taiwan');
   });
 
-  it('amlTarget is Viktor Bout', () => {
-    expect(CAST.amlTarget.name).toBe('Viktor Bout');
+  it('amlTarget is a currently-listed OFAC SDN organization', () => {
+    // Star Dragon Corporation Limited — real OFAC SDN Organization entry (schema=Organization).
+    // Verified DENY (score 1.000) against data/sanctions_snapshot_20260621.csv.
+    expect(CAST.amlTarget.name).toBe('Star Dragon Corporation Limited');
   });
 
   it('bureau is MeshCredit', () => {

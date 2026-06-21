@@ -28,14 +28,24 @@ import type { Tier } from '../kya/scorecard.js';
 
 // ── Pure helpers ─────────────────────────────────────────────────────────────
 
-/** Numeric rank of a credit tier (higher = better). */
-export function tierRank(tier: Tier): number {
+/** Numeric rank of a credit tier (higher = better).
+ *  Handles both v1/v2 Tier strings (DENIED, TIER-1…TIER-4) and v3 PassportTier
+ *  strings (DENIED, BRONZE, SILVER, GOLD, PLATINUM) so gateCheck works with
+ *  credentials issued by either underwriting version. */
+export function tierRank(tier: string): number {
   switch (tier) {
-    case 'DENIED': return 0;
-    case 'TIER-1': return 1;
-    case 'TIER-2': return 2;
-    case 'TIER-3': return 3;
-    case 'TIER-4': return 4;
+    // v1/v2 legacy tiers
+    case 'DENIED':   return 0;
+    case 'TIER-1':   return 1;
+    case 'TIER-2':   return 2;
+    case 'TIER-3':   return 3;
+    case 'TIER-4':   return 4;
+    // v3 passport tiers — mapped to the equivalent rank bracket
+    case 'BRONZE':   return 1;
+    case 'SILVER':   return 2;
+    case 'GOLD':     return 3;
+    case 'PLATINUM': return 4;
+    default:         return 0; // unknown → no access
   }
 }
 
@@ -43,7 +53,7 @@ export function tierRank(tier: Tier): number {
  * Pure tier comparison: true iff agentTier satisfies requiredTier.
  * (agent rank >= required rank)
  */
-export function compareTier(agentTier: Tier, requiredTier: Tier): boolean {
+export function compareTier(agentTier: Tier | string, requiredTier: Tier | string): boolean {
   return tierRank(agentTier) >= tierRank(requiredTier);
 }
 

@@ -95,6 +95,47 @@ describe('compareTier', () => {
   });
 });
 
+// ── v3 PassportTier support in tierRank / compareTier ────────────────────────
+// Regression for Bug 1 / Bug 3 fix: gateCheck casts decoded v3 credential tiers
+// (BRONZE/SILVER/GOLD/PLATINUM) using tierRank(). Before the fix, those strings
+// fell through the switch and returned undefined, making every v3 credential fail
+// the gateCheck — which caused an immediate EscrowCancel (tecNO_PERMISSION crash).
+
+describe('tierRank — v3 PassportTier support', () => {
+  it('BRONZE maps to rank 1 (same as TIER-1)', () => {
+    expect(tierRank('BRONZE')).toBe(1);
+  });
+  it('SILVER maps to rank 2 (same as TIER-2)', () => {
+    expect(tierRank('SILVER')).toBe(2);
+  });
+  it('GOLD maps to rank 3 (same as TIER-3)', () => {
+    expect(tierRank('GOLD')).toBe(3);
+  });
+  it('PLATINUM maps to rank 4 (same as TIER-4)', () => {
+    expect(tierRank('PLATINUM')).toBe(4);
+  });
+  it('unknown string maps to rank 0 (no access)', () => {
+    expect(tierRank('UNKNOWN_TIER')).toBe(0);
+  });
+});
+
+describe('compareTier — v3 PassportTier meets v1/v2 Tier requirements', () => {
+  it('BRONZE satisfies TIER-1 gate', () => {
+    expect(compareTier('BRONZE', 'TIER-1')).toBe(true);
+  });
+  it('BRONZE does not satisfy TIER-2 gate', () => {
+    expect(compareTier('BRONZE', 'TIER-2')).toBe(false);
+  });
+  it('GOLD satisfies TIER-1, TIER-2, and TIER-3 gates', () => {
+    expect(compareTier('GOLD', 'TIER-1')).toBe(true);
+    expect(compareTier('GOLD', 'TIER-2')).toBe(true);
+    expect(compareTier('GOLD', 'TIER-3')).toBe(true);
+  });
+  it('DENIED (v3) does not satisfy TIER-1 gate', () => {
+    expect(compareTier('DENIED', 'TIER-1')).toBe(false);
+  });
+});
+
 // ── buildAcceptedCredentials ────────────────────────────────────────────────
 
 describe('buildAcceptedCredentials', () => {

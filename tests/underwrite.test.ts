@@ -244,6 +244,33 @@ describe('underwrite', () => {
     expect((r.terms as any).maxTxAmount).toBe('100');
   });
 
+  it('bug3-fix: v3 AML-clear agent (no amlName/amlResult) → D6 PASS, tier BRONZE, NOT DENIED', async () => {
+    // Regression for Bug 3: when no amlName/amlResult is supplied to underwrite(),
+    // D6 must default to PASS and the agent must receive a BRONZE credential (not DENIED).
+    // This mirrors how the scenario underwrites agentA/agentB — their role names ("Aria",
+    // "Bravo") are NOT screened against SDN; only counterparty names are (at payment time).
+    const r = await underwrite(noChain, 'rAgent', demoOffChain, { now: NOW, version: 3 });
+    const d6 = r.dossier.dimensions?.find(d => d.id === 'D6');
+    expect(d6).toBeDefined();
+    expect(d6!.status).toBe('PASS');
+    expect(r.terms.tier).toBe('BRONZE');
+    expect((r.terms as any).maxTxAmount).toBe('100');
+    expect(r.terms.disposition).toBe('A');
+  });
+
+  it('bug3-fix: v3 real DENY amlResult → D6 DENY, tier DENIED', async () => {
+    // The inverse: a genuine SDN hit causes D6=DENY and tier=DENIED.
+    const denyResult = { hit: true, score: 1.0, matchedName: 'star dragon corporation limited', action: 'DENY' as const };
+    const r = await underwrite(noChain, 'rAgent', demoOffChain, {
+      now: NOW, version: 3, amlResult: denyResult,
+    });
+    const d6 = r.dossier.dimensions?.find(d => d.id === 'D6');
+    expect(d6).toBeDefined();
+    expect(d6!.status).toBe('DENY');
+    expect(r.terms.tier).toBe('DENIED');
+    expect((r.terms as any).maxTxAmount).toBe('0');
+  });
+
   it('task9: dossier dimensions array has exactly 6 entries (D1–D6)', async () => {
     const r = await underwrite(noChain, 'rAgent', demoOffChain, { now: NOW, version: 3 });
     expect(r.dossier.dimensions).toBeDefined();

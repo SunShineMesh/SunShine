@@ -51,7 +51,7 @@ export const CAST = {
   bank:       { name: 'Settlement Bank', flag: '🏦' },
   supplierA:  { name: 'Lagos Precision Parts', city: 'Lagos', country: 'Nigeria', flag: '🇳🇬' },
   supplierB:  { name: 'Taipei Tech Components', city: 'Taipei', country: 'Taiwan', flag: '🇹🇼' },
-  amlTarget:  { name: 'Viktor Bout', role: 'sanctioned counterparty', flag: '⛔' },
+  amlTarget:  { name: 'Star Dragon Corporation Limited', role: 'sanctioned counterparty', flag: '⛔' },
 } as const;
 
 // ── StepEvent type (preserved for web theater SSE contract) ─────────────────
@@ -205,7 +205,8 @@ export async function runCrossBorderScenario(deps: {
     };
     const kyaFresh = await underwrite(c, agentA.address, offChainFresh, {
       attestation, operatorCredId: opView?.credId, version: 3,
-      amlName: CAST.agentA.name, amlMatcher,
+      // D6 defaults to PASS when no amlName/amlResult is provided — agentA is AML-clear.
+      // Counterparty AML screening happens at payment time (assessCounterparty), not here.
     });
 
     const freshIssueHash = await issueCredential(c, treasury, agentA.address, kyaFresh.terms);
@@ -216,8 +217,8 @@ export async function runCrossBorderScenario(deps: {
     patch('kya_fresh', { status: 'done',
       tx: tx('CredentialCreate', 'AgentTrustCredential v3 (fresh)', freshIssueHash),
       data: {
-        agent: agentA.address, tier: 'BRONZE', confidence: freshConf,
-        settlements: 0, windowDays: 0, ceiling: TIER_CEILING.BRONZE,
+        agent: agentA.address, tier: kyaFresh.terms.tier, confidence: freshConf,
+        settlements: 0, windowDays: 0, ceiling: kyaFresh.terms.maxTxAmount,
         dimensions: kyaFresh.dossier.dimensions?.map(d => ({ id: d.id, status: d.status, issuer: d.issuer })),
         credId: viewFresh?.credId,
       } });
@@ -292,33 +293,35 @@ export async function runCrossBorderScenario(deps: {
     const drawA = drawBudget(budget, amountA, maxDelegatedSpend);
 
     if (assessA.decision === 'PROCEED' && drawA.ok) {
-      // Actual RLUSD transfer: tiny amount (≤ 0.5 RLUSD) from demoAgent → supplierA.
-      // The abstract $50 is the display/logic value; the wire amount is 0.1 XRP (XRP testnet faucet).
+      // Actual XRP transfer: tiny amount from demoAgent → supplierA (via bank escrow gate).
+      // The abstract $50 is the display/logic value; the wire amount is 0.1 XRP (XRP testnet drops).
       const handleA = await submitPaymentForApproval(
         c, demoAgent, bank.address,
-        '100000', // 0.1 XRP drops (XRP, not RLUSD — tiny testnet amount)
+        '100000', // 0.1 XRP drops — XRP only, never RLUSD
         dossierRef('settle_a:' + agentA.address),
       );
       const gA = await gateCheck(c, agentA.address, treasury.address, 'TIER-1', { amount: amountA });
       let releaseHashA: string | undefined;
       if (gA.allowed) {
         releaseHashA = await approveAndRelease(c, agentA, demoAgent.address, handleA, [viewFresh!.credId]);
-      } else {
-        await rejectAndRefund(c, demoAgent, demoAgent.address, handleA);
       }
-      patch('settle_a', { status: 'done',
+      // If gate unexpectedly blocks: leave the escrow to auto-refund when CancelAfter elapses.
+      // Do NOT call EscrowCancel — it will return tecNO_PERMISSION before CancelAfter.
+      patch('settle_a', { status: gA?.allowed ? 'done' : 'denied',
         tx: tx('EscrowFinish', `Released $${amountA} → ${CAST.supplierA.name}`, releaseHashA ?? handleA.createHash),
         data: {
           decision: assessA.decision, rationale: assessA.rationale,
           model: assessA.model, ms: assessA.ms, fallback: assessA.fallback,
-          budgetAllocated: budget.allocated, gateAllowed: gA.allowed,
+          budgetAllocated: budget.allocated, gateAllowed: gA?.allowed,
           abstractAmount: amountA, note: 'abstract $50 displayed; tiny XRP moved on-chain',
         } });
     } else {
-      const cancelHandle = await submitPaymentForApproval(c, demoAgent, bank.address, '100000', dossierRef('settle_a_hold'));
-      await rejectAndRefund(c, demoAgent, demoAgent.address, cancelHandle);
+      // HOLD or delegation cap exceeded — no funds moved, no escrow created.
       patch('settle_a', { status: 'denied',
-        data: { decision: assessA.decision, rationale: assessA.rationale, reason: drawA.reason } });
+        data: {
+          decision: assessA.decision, rationale: assessA.rationale, reason: drawA.reason,
+          note: 'agent held — no funds moved',
+        } });
     }
 
     // ── STEP 8 · denial_tier — agentA attempts $300 → tier ceiling DENIES ───
@@ -348,7 +351,7 @@ export async function runCrossBorderScenario(deps: {
     // First, underwrite agentB and issue a credential.
     const kyaB = await underwrite(c, agentB.address, offChainFresh, {
       attestation, operatorCredId: opView?.credId, version: 3,
-      amlName: CAST.agentB.name, amlMatcher,
+      // D6 defaults to PASS — agentB is AML-clear; counterparty screening is per-payment.
     });
     const bIssueHash = await issueCredential(c, treasury, agentB.address, kyaB.terms);
     await acceptCredential(c, agentB, treasury.address);
@@ -377,20 +380,23 @@ export async function runCrossBorderScenario(deps: {
       let releaseHashB: string | undefined;
       if (gB.allowed) {
         releaseHashB = await approveAndRelease(c, agentB, demoAgent.address, handleB, [viewB!.credId]);
-      } else {
-        await rejectAndRefund(c, demoAgent, demoAgent.address, handleB);
       }
-      patch('settle_b', { status: 'done',
+      // If gate unexpectedly blocks: leave the escrow to auto-refund. No EscrowCancel.
+      patch('settle_b', { status: gB?.allowed ? 'done' : 'denied',
         tx: tx('EscrowFinish', `Released $${amountB} → ${CAST.supplierB.name}`, releaseHashB ?? handleB.createHash),
         data: {
           decision: assessB.decision, rationale: assessB.rationale,
           model: assessB.model, ms: assessB.ms, fallback: assessB.fallback,
-          budgetAllocated: budget.allocated, gateAllowed: gB.allowed,
+          budgetAllocated: budget.allocated, gateAllowed: gB?.allowed,
           abstractAmount: amountB, credId: bIssueHash,
         } });
     } else {
+      // HOLD or delegation cap exceeded — no funds moved, no escrow created.
       patch('settle_b', { status: 'denied',
-        data: { decision: assessB.decision, rationale: assessB.rationale, reason: drawB.reason } });
+        data: {
+          decision: assessB.decision, rationale: assessB.rationale, reason: drawB.reason,
+          note: 'agent held — no funds moved',
+        } });
     }
 
     // ── STEP 10 · denial_budget — agentB attempts $500 → BRONZE sub-cap DENIES
@@ -533,9 +539,8 @@ export async function runCrossBorderScenario(deps: {
       if (gConfirm.allowed) {
         confirmHash = await approveAndRelease(c, agentA, demoAgent.address, handleConfirm, [viewFresh!.credId]);
         confirmOk = true;
-      } else {
-        await rejectAndRefund(c, demoAgent, demoAgent.address, handleConfirm);
       }
+      // If gate blocks: leave escrow to auto-refund. No EscrowCancel (tecNO_PERMISSION guard).
     }
 
     patch('confirm_a', { status: confirmOk ? 'done' : 'denied',
