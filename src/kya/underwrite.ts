@@ -10,7 +10,18 @@ import { buildDossier, type Dossier } from './dossier.js';
 import { computeTier, computeConfidence, type TierInput } from './tier.js';
 import { dimsBitmask, buildDimensionRecord, type DimensionRecord } from './dimension.js';
 import type { MandateRecord } from './dimension.js';
-import type { ScreeningResult } from './aml.js';
+import { buildAmlMatcher, type AmlMatcher, type ScreeningResult } from './aml.js';
+import { principalIsPseudonymous, type Principal } from './principal.js';
+
+// ── Module-level AmlMatcher singleton (lazy-init) ────────────────────────────
+let _defaultMatcher: AmlMatcher | undefined;
+
+function getDefaultMatcher(): AmlMatcher {
+  if (!_defaultMatcher) {
+    _defaultMatcher = buildAmlMatcher();
+  }
+  return _defaultMatcher;
+}
 
 export interface UnderwriteResult { decision: Decision; terms: TrustTerms; signals: Signals; dossier: Dossier; }
 
@@ -92,7 +103,7 @@ function buildV3Dimensions(signals: Signals, opts: {
   // D6 — AML/compliance: use supplied amlResult if provided, else default PASS
   const amlResult = opts.amlResult;
   const d6Status = amlResult
-    ? (amlResult.action === 'DENY' ? 'FAIL' : amlResult.action === 'REVIEW' ? 'PENDING' : 'PASS')
+    ? (amlResult.action === 'DENY' ? 'DENY' : amlResult.action === 'REVIEW' ? 'PENDING' : 'PASS')
     : 'PASS';
   const d6: DimensionRecord = buildDimensionRecord('D6', {
     status: d6Status,
@@ -134,6 +145,13 @@ export async function underwrite(
     operatorBtier?: string;     // e.g. 'BTIER-3'
     /** AML screening result (Task 8 deliverable: flows into D6 dimension + dossier). */
     amlResult?: ScreeningResult;
+    // ── Task 9: AML + principal integration ───────────────────────────────────
+    /** Name to screen against OFAC SDN (principal name or agent name). */
+    amlName?: string;
+    /** Injectable AML matcher; defaults to the module-level singleton. */
+    amlMatcher?: AmlMatcher;
+    /** Principal identity model; controls tier cap for pseudonymous agents. */
+    principal?: Principal;
   } = {},
 ): Promise<UnderwriteResult> {
   const onChain = await readOnChainSignals(c, agentAddr);
@@ -150,9 +168,56 @@ export async function underwrite(
 
   const version = opts.version ?? 2;
 
+  // ── AML screening (run first; DENY aborts immediately) ──────────────────────
+  // If amlName is provided, run it through the matcher (or the injected matcher).
+  // If amlResult is already supplied by the caller, use it directly.
+  let resolvedAmlResult: ScreeningResult | undefined = opts.amlResult;
+  if (!resolvedAmlResult && opts.amlName) {
+    const matcher = opts.amlMatcher ?? getDefaultMatcher();
+    resolvedAmlResult = matcher(opts.amlName);
+  }
+
+  // Determine principal kind for the tier engine.
+  // If an explicit Principal is passed, honour it; otherwise derive from signals.
+  const principalKind: TierInput['principal'] = opts.principal
+    ? (principalIsPseudonymous(opts.principal) ? 'pseudonymous' : opts.principal.kind)
+    : (signals.operatorBacked ? 'org' : (signals.worldId ? 'individual' : 'pseudonymous'));
+
   if (version === 3) {
     // ── v3 path: tier+confidence engine ───────────────────────────────────────
-    const dims = buildV3Dimensions(signals, { now, d5Mandate: opts.d5Mandate, settlements: opts.settlements, amlResult: opts.amlResult });
+    // AML DENY hard gate: build a minimal DENIED dossier and return immediately.
+    if (resolvedAmlResult?.action === 'DENY') {
+      const dims = buildV3Dimensions(signals, { now, d5Mandate: opts.d5Mandate, settlements: opts.settlements, amlResult: resolvedAmlResult });
+      const mask = dimsBitmask(dims);
+      const dossier = buildDossier({
+        agentAddr,
+        operatorCredId: opts.operatorCredId,
+        harnessHashFull: att?.harnessHashFull ?? '',
+        skillHashFull: att?.skillHashFull ?? '',
+        score: decision.score,
+        tier: 'DENIED',
+        signals,
+        screening: { sanctions: 'hit', pep: 'clear', provider: 'opensanctions' },
+        dimensions: dims,
+        amlResult: resolvedAmlResult,
+        createdAt: now,
+      });
+      const terms: TrustTerms = {
+        v: 3,
+        tier: 'DENIED',
+        maxTxAmount: '0',
+        confidence: 0,
+        dimsBitmask: mask,
+        exp,
+        contentHash: contentHashFrom(dossier.ref),
+        disposition: 'D',
+        ...(att ? { ih: att.ih, sh: att.sh } : {}),
+        ...(opts.operatorCredId ? { op: prefix8(opts.operatorCredId) } : {}),
+      };
+      return { decision: { ...decision, tier: 'DENIED', maxTxAmount: '0' }, terms, signals, dossier };
+    }
+
+    const dims = buildV3Dimensions(signals, { now, d5Mandate: opts.d5Mandate, settlements: opts.settlements, amlResult: resolvedAmlResult });
     const mask = dimsBitmask(dims);
 
     const settlements = opts.settlements ?? signals.rlusdPayments ?? 0;
@@ -163,12 +228,11 @@ export async function underwrite(
       d2: dims.find(d => d.id === 'D2')?.status === 'PASS',
       d3: dims.find(d => d.id === 'D3')?.status === 'PASS',
       d5Mandate: dims.find(d => d.id === 'D5')?.status === 'PASS',
-      // Derive d6 directly from the AML action so REVIEW is preserved and not collapsed
-      // to 'FAIL' (which would incorrectly trigger DENIED in tier.ts line 77).
-      d6: opts.amlResult
-        ? (opts.amlResult.action === 'DENY' ? 'DENY' : opts.amlResult.action === 'REVIEW' ? 'REVIEW' : 'PASS')
+      // Derive d6 directly from the AML action so REVIEW is preserved and not collapsed.
+      d6: resolvedAmlResult
+        ? (resolvedAmlResult.action === 'DENY' ? 'DENY' : resolvedAmlResult.action === 'REVIEW' ? 'REVIEW' : 'PASS')
         : 'PASS',
-      principal: signals.operatorBacked ? 'org' : (signals.worldId ? 'individual' : 'pseudonymous'),
+      principal: principalKind,
       settlements,
       windowDays,
       successRate: opts.successRate,
@@ -184,7 +248,7 @@ export async function underwrite(
     });
 
     // Build screening record from AML result if provided.
-    const amlRes = opts.amlResult;
+    const amlRes = resolvedAmlResult;
     const screening = amlRes
       ? { sanctions: amlRes.action === 'DENY' ? 'hit' : 'clear' as 'hit' | 'clear', pep: 'clear' as const, provider: 'opensanctions' }
       : { sanctions: 'clear' as const, pep: 'clear' as const, provider: 'default' };

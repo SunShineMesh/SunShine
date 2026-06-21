@@ -10,6 +10,9 @@ export default defineConfig({
       // test state never accumulates in a real file, files stay clean across
       // parallel CI shards, and the data/ directory is not polluted.
       WORLDID_NULLIFIER_STORE: ':memory:',
+      // Always use the small JSON fixture for AML during tests so results are
+      // deterministic, fast, and offline-safe (never depends on the multi-MB CSV).
+      SANCTIONS_FIXTURE: 'true',
     },
   },
 });

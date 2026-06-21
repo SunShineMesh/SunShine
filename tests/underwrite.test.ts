@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { underwrite } from '../src/kya/underwrite.js';
 import { attest } from '../src/agent/attest.js';
 import type { TrustTerms } from '../src/xrpl/codec.js';
+import type { AmlMatcher } from '../src/kya/aml.js';
 
 const noChain = { request: async () => { throw new Error('actNotFound'); } } as any; // -> readOnChainSignals returns {}
 const demoOffChain = { worldId: true, runtimeStable: true, transcriptCoherent: true, sourceProvided: true, humanDidComplete: true, operatorBacked: true };
@@ -115,7 +116,7 @@ describe('underwrite', () => {
     expect(d6!.status).toBe('PASS');
   });
 
-  it('v3: amlResult DENY result flows into D6 dimension status as FAIL', async () => {
+  it('v3: amlResult DENY result flows into D6 dimension status as DENY', async () => {
     const mockDenyResult = {
       hit: true, score: 0.95, matchedName: 'Viktor Bout', action: 'DENY' as const,
     };
@@ -124,10 +125,10 @@ describe('underwrite', () => {
     });
     expect(r.dossier.amlResult).toBeDefined();
     expect(r.dossier.amlResult!.action).toBe('DENY');
-    // D6 dimension should reflect the DENY/FAIL
+    // D6 dimension should reflect DENY (the hard-gate status)
     const d6 = r.dossier.dimensions?.find(d => d.id === 'D6');
     expect(d6).toBeDefined();
-    expect(d6!.status).toBe('FAIL');
+    expect(d6!.status).toBe('DENY');
     // Critical security gate: AML DENY must produce a DENIED tier with $0 ceiling
     expect(r.terms.tier).toBe('DENIED');
     expect((r.terms as any).maxTxAmount).toBe('0');
@@ -148,5 +149,73 @@ describe('underwrite', () => {
     expect(r.terms.tier).toBe('BRONZE');
     expect((r.terms as any).maxTxAmount).toBe('100');
     expect(r.terms.disposition).toBe('A');
+  });
+
+  // ── TASK 9: AML + principal wired into underwrite (integration) ────────────
+
+  it('task9: amlName + mockDenyMatcher → DENIED tier, D6 status DENY', async () => {
+    const mockDenyMatcher: AmlMatcher = (_name: string) => ({
+      hit: true, score: 0.95, matchedName: 'Viktor Anatolijevitch BOUT', action: 'DENY' as const,
+    });
+    const r = await underwrite(noChain, 'rAgent', demoOffChain, {
+      now: NOW, version: 3,
+      amlName: 'viktor bout',
+      amlMatcher: mockDenyMatcher,
+    });
+    expect(r.decision.tier).toBe('DENIED');
+    const d6 = r.dossier.dimensions?.find(d => d.id === 'D6');
+    expect(d6).toBeDefined();
+    expect(d6!.status).toBe('DENY');
+    expect(r.terms.tier).toBe('DENIED');
+    expect((r.terms as any).maxTxAmount).toBe('0');
+  });
+
+  it('task9: amlName alice muller + version 3 → NOT DENIED, D6 status PASS', async () => {
+    const r = await underwrite(noChain, 'rAgent', demoOffChain, {
+      now: NOW, version: 3,
+      amlName: 'alice muller',
+    });
+    // Alice is clean — should not be DENIED
+    expect(r.terms.tier).not.toBe('DENIED');
+    const d6 = r.dossier.dimensions?.find(d => d.id === 'D6');
+    expect(d6).toBeDefined();
+    expect(d6!.status).toBe('PASS');
+  });
+
+  it('task9: pseudonymous principal → tier at most BRONZE', async () => {
+    const r = await underwrite(noChain, 'rAgent', demoOffChain, {
+      now: NOW, version: 3,
+      principal: { kind: 'pseudonymous' },
+      d5Mandate: true,
+      settlements: 50,
+      windowDays: 90,
+    });
+    expect(r.terms.tier).toBe('BRONZE');
+    expect((r.terms as any).maxTxAmount).toBe('100');
+  });
+
+  it('task9: d5Mandate + settlements=10 + windowDays=30 + D1/D2/D3 pass → SILVER', async () => {
+    const r = await underwrite(noChain, 'rAgent', { ...demoOffChain, worldId: true }, {
+      now: NOW, version: 3,
+      d5Mandate: true,
+      settlements: 10,
+      windowDays: 30,
+    });
+    expect(r.terms.v).toBe(3);
+    expect(r.terms.tier).toBe('SILVER');
+    expect((r.terms as any).maxTxAmount).toBe('500');
+  });
+
+  it('task9: dossier dimensions array has exactly 6 entries (D1–D6)', async () => {
+    const r = await underwrite(noChain, 'rAgent', demoOffChain, { now: NOW, version: 3 });
+    expect(r.dossier.dimensions).toBeDefined();
+    expect(r.dossier.dimensions!.length).toBe(6);
+    const ids = r.dossier.dimensions!.map(d => d.id);
+    expect(ids).toContain('D1');
+    expect(ids).toContain('D2');
+    expect(ids).toContain('D3');
+    expect(ids).toContain('D4');
+    expect(ids).toContain('D5');
+    expect(ids).toContain('D6');
   });
 });
