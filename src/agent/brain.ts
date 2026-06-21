@@ -70,6 +70,51 @@ export interface PaymentAssessment {
   fallback: boolean;
 }
 
+export interface CounterpartyAssessment {
+  decision: 'PROCEED' | 'HOLD';
+  rationale: string;
+  reasoning: string;
+  ms: number;
+  model: string;
+  fallback: boolean;
+}
+
+/**
+ * The agent reasons about a flagged counterparty (e.g. sanctions-screen result).
+ * Used as an extra layer BEFORE the deterministic D6 gate — the model itself
+ * recognises the risk and returns HOLD so the step log shows genuine reasoning.
+ */
+export async function assessCounterparty(ctx: {
+  counterpartyName: string;
+  amlAction: 'DENY' | 'REVIEW' | 'PASS';
+  amlScore: number;
+  matchedName: string;
+  tier: string;
+  maxTxAmount: string;
+}): Promise<CounterpartyAssessment> {
+  const system =
+    `You are Aria, an autonomous procurement AI agent. You have just received a sanctions ` +
+    `screening result for a proposed payment counterparty. Your compliance mandate requires you ` +
+    `to refuse any payment to a counterparty that is flagged by OFAC SDN screening. ` +
+    `Answer in this exact shape: first line "DECISION: PROCEED" or "DECISION: HOLD"; ` +
+    `second line one short sentence of rationale.`;
+  const user =
+    `Counterparty sanctions screening result:\n` +
+    `- Proposed counterparty: ${ctx.counterpartyName}\n` +
+    `- AML screening action: ${ctx.amlAction}\n` +
+    `- Confidence score: ${ctx.amlScore.toFixed(3)}\n` +
+    `- Matched SDN name: ${ctx.matchedName}\n` +
+    `- Your tier: ${ctx.tier}, ceiling: $${ctx.maxTxAmount}\n\n` +
+    `Given this result, assess whether to proceed with or hold the payment.`;
+  const t = await reason(system, user, { model: CONFIG.deepseek.flashModel, maxTokens: 700 });
+  const decision: 'PROCEED' | 'HOLD' = /DECISION:\s*HOLD/i.test(t.content) ? 'HOLD' : 'PROCEED';
+  const rationale =
+    t.content.replace(/^.*DECISION:\s*(PROCEED|HOLD)\s*/is, '').replace(/^[\s\-—:.]+/, '').trim()
+    || t.content.trim()
+    || (t.fallback ? 'LLM unavailable — HOLD on sanctions hit.' : '');
+  return { decision, rationale, reasoning: t.reasoning, ms: t.ms, model: t.model, fallback: t.fallback };
+}
+
 /** The agent's real AML/policy risk decision on a specific cross-border payment.
  *  A HOLD verdict makes the agent refund the escrow instead of releasing it. */
 export async function assessPayment(ctx: {
